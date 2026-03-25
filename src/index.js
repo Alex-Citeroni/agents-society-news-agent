@@ -45,16 +45,14 @@ async function fetchNews() {
     }
   }
 
-  // Shuffle and pick top items to avoid always using the same source
   const shuffled = allItems.sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, ARTICLES_PER_RUN * 3); // fetch extra for selection
+  return shuffled.slice(0, ARTICLES_PER_RUN * 3);
 }
 
 /**
- * Use Groq (Llama) to select the best story and rewrite it as an original article
- * in English, Spanish, and Chinese
+ * Generate an article in a single language using Groq
  */
-async function generateArticle(newsItems) {
+async function generateForLanguage(newsItems, lang, langName) {
   const newsList = newsItems
     .map((item, i) => `[${i + 1}] "${item.title}" — ${item.snippet} (Source: ${item.source}, URL: ${item.link})`)
     .join('\n\n');
@@ -64,60 +62,64 @@ async function generateArticle(newsItems) {
     messages: [
       {
         role: 'system',
-        content: `You are a multilingual AI news journalist for "Agents Society", a social network where humans and AI agents coexist.
-Your job is to pick the most interesting story about AI agents, AI tools, or AI industry news, then write an ORIGINAL article about it.
+        content: `You are an AI news journalist for "Agents Society", a social network where humans and AI agents coexist.
 
-IMPORTANT RULES:
-- Do NOT copy the original article. Write a completely new, original piece inspired by the news.
-- The article should be informative, engaging, and written in a professional journalistic style.
-- Include your own analysis and insights about what this means for the AI agents ecosystem.
-- The article body should be 400-800 words.
-- Write in THREE languages: English, Spanish, and Chinese (Simplified).
+Write ALL output in ${langName}.
 
-Respond ONLY with valid JSON in this exact format:
+RULES:
+- Pick the most interesting story about AI agents or AI technology
+- Write a completely ORIGINAL article (do NOT copy the source)
+- Professional journalistic style, 400-800 words
+- Include analysis about what this means for the AI ecosystem
+
+Return ONLY valid JSON with these 4 string fields:
 {
-  "title_en": "English title",
-  "title_es": "Spanish title",
-  "title_zh": "Chinese title",
-  "summary_en": "1-2 sentence English summary (max 200 chars)",
-  "summary_es": "1-2 sentence Spanish summary (max 200 chars)",
-  "summary_zh": "1-2 sentence Chinese summary (max 200 chars)",
-  "body_en": "Full English article body in markdown",
-  "body_es": "Full Spanish article body in markdown",
-  "body_zh": "Full Chinese article body in markdown",
-  "source_url": "URL of the original news source"
-}`,
+  "title": "article title in ${langName}",
+  "summary": "1-2 sentence summary in ${langName}, max 200 characters",
+  "body": "full article body in ${langName}, use plain text with paragraph breaks using \\n\\n",
+  "source_url": "URL of the original news"
+}
+
+CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragraph breaks. Do NOT use markdown headers. Do NOT break out of the JSON string.`,
       },
       {
         role: 'user',
-        content: `Here are today's top AI news stories. Pick the MOST interesting one about AI agents or AI technology and write an original article:\n\n${newsList}`,
+        content: `Here are today's top AI news stories. Pick the best one and write an original article in ${langName}:\n\n${newsList}`,
       },
     ],
     temperature: 0.7,
-    max_tokens: 4000,
+    max_tokens: 3000,
     response_format: { type: 'json_object' },
   });
 
   const content = response.choices[0]?.message?.content;
-  if (!content) throw new Error('Empty response from Groq');
+  if (!content) throw new Error(`Empty response from Groq (${lang})`);
 
-  return JSON.parse(content);
+  const parsed = JSON.parse(content);
+
+  // Validate required fields
+  if (!parsed.title || !parsed.body) {
+    throw new Error(`Missing title or body in response (${lang})`);
+  }
+
+  return {
+    title: parsed.title,
+    summary: (parsed.summary || '').slice(0, 490),
+    body: parsed.body,
+    source_url: parsed.source_url || newsItems[0]?.link || null,
+  };
 }
 
 /**
  * Publish article to Agents Society API
  */
-async function publishArticle(article, lang) {
-  const titleKey = `title_${lang}`;
-  const summaryKey = `summary_${lang}`;
-  const bodyKey = `body_${lang}`;
-
+async function publishArticle(article) {
   const payload = {
-    title: article[titleKey],
-    body: article[bodyKey],
-    summary: article[summaryKey],
+    title: article.title,
+    body: article.body,
+    summary: article.summary,
     category: CATEGORY,
-    source_url: article.source_url || null,
+    source_url: article.source_url,
     status: 'published',
   };
 
@@ -133,7 +135,7 @@ async function publishArticle(article, lang) {
   const data = await res.json();
 
   if (!data.success) {
-    throw new Error(`Failed to publish (${lang}): ${data.error}`);
+    throw new Error(`Failed to publish: ${data.error}`);
   }
 
   return data.data;
@@ -146,9 +148,7 @@ async function sendHeartbeat() {
   try {
     await fetch(`${API_BASE}/api/v1/agents/heartbeat`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${AGENT_API_KEY}`,
-      },
+      headers: { Authorization: `Bearer ${AGENT_API_KEY}` },
     });
   } catch {
     // non-critical
@@ -161,10 +161,8 @@ async function sendHeartbeat() {
 async function main() {
   console.log(`[${new Date().toISOString()}] News agent starting...`);
 
-  // Send heartbeat
   await sendHeartbeat();
 
-  // Fetch news from RSS
   console.log('Fetching news from RSS feeds...');
   const newsItems = await fetchNews();
 
@@ -173,20 +171,22 @@ async function main() {
     return;
   }
 
-  console.log(`Found ${newsItems.length} relevant items. Generating article...`);
+  console.log(`Found ${newsItems.length} relevant items. Generating articles...`);
 
-  // Generate article with Groq
-  const article = await generateArticle(newsItems);
+  const languages = [
+    { code: 'en', name: 'English' },
+    { code: 'es', name: 'Spanish' },
+    { code: 'zh', name: 'Simplified Chinese' },
+  ];
 
-  // Publish in all 3 languages
-  const languages = ['en', 'es', 'zh'];
-
-  for (const lang of languages) {
+  for (const { code, name } of languages) {
     try {
-      const result = await publishArticle(article, lang);
-      console.log(`Published (${lang}): "${result.title}" — slug: ${result.slug}`);
+      console.log(`Generating article in ${name}...`);
+      const article = await generateForLanguage(newsItems, code, name);
+      const result = await publishArticle(article);
+      console.log(`Published (${code}): "${result.title}" — slug: ${result.slug}`);
     } catch (err) {
-      console.error(`Error publishing (${lang}):`, err.message);
+      console.error(`Error (${code}):`, err.message);
     }
   }
 
