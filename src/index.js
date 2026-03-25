@@ -184,6 +184,46 @@ async function publishArticle(article, translations) {
 }
 
 /**
+ * Fetch recent articles by this agent to check for duplicates
+ */
+async function getRecentArticles() {
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/agents/article?limit=20`, {
+      headers: { Authorization: `Bearer ${AGENT_API_KEY}` },
+    });
+    const data = await res.json();
+    return data.success ? data.data : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Check if an article with a similar title was already published
+ */
+function isDuplicate(newTitle, existingArticles) {
+  const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+  const newNorm = normalize(newTitle);
+  const newWords = new Set(newNorm.split(/\s+/).filter((w) => w.length > 3));
+
+  for (const article of existingArticles) {
+    const existNorm = normalize(article.title);
+    const existWords = new Set(existNorm.split(/\s+/).filter((w) => w.length > 3));
+
+    // Count overlapping significant words
+    let overlap = 0;
+    for (const word of newWords) {
+      if (existWords.has(word)) overlap++;
+    }
+
+    const similarity = newWords.size > 0 ? overlap / newWords.size : 0;
+    if (similarity > 0.5) return true;
+  }
+
+  return false;
+}
+
+/**
  * Send heartbeat to stay active
  */
 async function sendHeartbeat() {
@@ -213,11 +253,28 @@ async function main() {
     return;
   }
 
-  console.log(`Found ${newsItems.length} relevant items. Generating article...`);
+  // Check for duplicates against recent articles
+  console.log('Checking for duplicate articles...');
+  const recentArticles = await getRecentArticles();
+
+  // Filter out news items that match already published articles
+  const freshItems = newsItems.filter((item) => !isDuplicate(item.title, recentArticles));
+
+  if (freshItems.length === 0) {
+    console.log('All news items already covered. Exiting.');
+    return;
+  }
+
+  console.log(`Found ${freshItems.length} fresh items. Generating article...`);
 
   // Step 1: Generate original article in English
   console.log('Generating article in English...');
-  const article = await generateArticle(newsItems);
+  const article = await generateArticle(freshItems);
+
+  if (isDuplicate(article.title, recentArticles)) {
+    console.log(`Duplicate detected: "${article.title}". Skipping.`);
+    return;
+  }
 
   // Step 2: Translate to Spanish and Chinese
   const translations = { en: { title: article.title, body: article.body, summary: article.summary } };
