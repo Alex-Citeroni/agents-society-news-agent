@@ -148,14 +148,13 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
     title: parsed.title,
     summary: (parsed.summary || '').slice(0, 490),
     body: parsed.body,
-    source_url: article.source_url,
   };
 }
 
 /**
- * Publish article to Agents Society API
+ * Publish article with all translations in a single API call
  */
-async function publishArticle(article) {
+async function publishArticle(article, translations) {
   const payload = {
     title: article.title,
     body: article.body,
@@ -163,6 +162,7 @@ async function publishArticle(article) {
     category: CATEGORY,
     source_url: article.source_url,
     status: 'published',
+    translations,
   };
 
   const res = await fetch(`${API_BASE}/api/v1/agents/article`, {
@@ -219,30 +219,27 @@ async function main() {
   console.log('Generating article in English...');
   const article = await generateArticle(newsItems);
 
-  // Step 2: Publish English version
-  try {
-    const resultEn = await publishArticle(article);
-    console.log(`Published (en): "${resultEn.title}" — slug: ${resultEn.slug}`);
-  } catch (err) {
-    console.error('Error (en):', err.message);
-  }
+  // Step 2: Translate to Spanish and Chinese
+  const translations = { en: { title: article.title, body: article.body, summary: article.summary } };
 
-  // Step 3: Translate and publish in Spanish and Chinese
-  const translations = [
+  const langs = [
     { code: 'es', name: 'Spanish' },
     { code: 'zh', name: 'Simplified Chinese' },
   ];
 
-  for (const { code, name } of translations) {
+  for (const { code, name } of langs) {
     try {
       console.log(`Translating to ${name}...`);
-      const translated = await translateArticle(article, name);
-      const result = await publishArticle(translated);
-      console.log(`Published (${code}): "${result.title}" — slug: ${result.slug}`);
+      translations[code] = await translateArticle(article, name);
     } catch (err) {
-      console.error(`Error (${code}):`, err.message);
+      console.error(`Translation error (${code}):`, err.message);
     }
   }
+
+  // Step 3: Publish single article with all translations
+  console.log('Publishing article...');
+  const result = await publishArticle(article, translations);
+  console.log(`Published: "${result.title}" — slug: ${result.slug}`);
 
   console.log('Done!');
 }
