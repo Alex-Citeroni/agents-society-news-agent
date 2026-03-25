@@ -50,9 +50,9 @@ async function fetchNews() {
 }
 
 /**
- * Generate an article in a single language using Groq
+ * Generate the original article in English
  */
-async function generateForLanguage(newsItems, lang, langName) {
+async function generateArticle(newsItems) {
   const newsList = newsItems
     .map((item, i) => `[${i + 1}] "${item.title}" — ${item.snippet} (Source: ${item.source}, URL: ${item.link})`)
     .join('\n\n');
@@ -64,8 +64,6 @@ async function generateForLanguage(newsItems, lang, langName) {
         role: 'system',
         content: `You are an AI news journalist for "Agents Society", a social network where humans and AI agents coexist.
 
-Write ALL output in ${langName}.
-
 RULES:
 - Pick the most interesting story about AI agents or AI technology
 - Write a completely ORIGINAL article (do NOT copy the source)
@@ -74,9 +72,9 @@ RULES:
 
 Return ONLY valid JSON with these 4 string fields:
 {
-  "title": "article title in ${langName}",
-  "summary": "1-2 sentence summary in ${langName}, max 200 characters",
-  "body": "full article body in ${langName}, use plain text with paragraph breaks using \\n\\n",
+  "title": "article title",
+  "summary": "1-2 sentence summary, max 200 characters",
+  "body": "full article body, use plain text with paragraph breaks using \\n\\n",
   "source_url": "URL of the original news"
 }
 
@@ -84,7 +82,7 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
       },
       {
         role: 'user',
-        content: `Here are today's top AI news stories. Pick the best one and write an original article in ${langName}:\n\n${newsList}`,
+        content: `Here are today's top AI news stories. Pick the best one and write an original article in English:\n\n${newsList}`,
       },
     ],
     temperature: 0.7,
@@ -93,13 +91,11 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
   });
 
   const content = response.choices[0]?.message?.content;
-  if (!content) throw new Error(`Empty response from Groq (${lang})`);
+  if (!content) throw new Error('Empty response from Groq');
 
   const parsed = JSON.parse(content);
-
-  // Validate required fields
   if (!parsed.title || !parsed.body) {
-    throw new Error(`Missing title or body in response (${lang})`);
+    throw new Error('Missing title or body in response');
   }
 
   return {
@@ -107,6 +103,52 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
     summary: (parsed.summary || '').slice(0, 490),
     body: parsed.body,
     source_url: parsed.source_url || newsItems[0]?.link || null,
+  };
+}
+
+/**
+ * Translate an article into another language
+ */
+async function translateArticle(article, langName) {
+  const response = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      {
+        role: 'system',
+        content: `You are a professional translator. Translate the given article into ${langName}. Keep the same tone, style, and structure.
+
+Return ONLY valid JSON with these 3 string fields:
+{
+  "title": "translated title",
+  "summary": "translated summary, max 200 characters",
+  "body": "translated full article body, use \\n\\n for paragraph breaks"
+}
+
+CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragraph breaks. Do NOT use markdown headers. Do NOT break out of the JSON string.`,
+      },
+      {
+        role: 'user',
+        content: `Translate this article into ${langName}:\n\nTitle: ${article.title}\n\nSummary: ${article.summary}\n\nBody:\n${article.body}`,
+      },
+    ],
+    temperature: 0.3,
+    max_tokens: 3000,
+    response_format: { type: 'json_object' },
+  });
+
+  const content = response.choices[0]?.message?.content;
+  if (!content) throw new Error(`Empty translation response (${langName})`);
+
+  const parsed = JSON.parse(content);
+  if (!parsed.title || !parsed.body) {
+    throw new Error(`Missing title or body in translation (${langName})`);
+  }
+
+  return {
+    title: parsed.title,
+    summary: (parsed.summary || '').slice(0, 490),
+    body: parsed.body,
+    source_url: article.source_url,
   };
 }
 
@@ -171,19 +213,31 @@ async function main() {
     return;
   }
 
-  console.log(`Found ${newsItems.length} relevant items. Generating articles...`);
+  console.log(`Found ${newsItems.length} relevant items. Generating article...`);
 
-  const languages = [
-    { code: 'en', name: 'English' },
+  // Step 1: Generate original article in English
+  console.log('Generating article in English...');
+  const article = await generateArticle(newsItems);
+
+  // Step 2: Publish English version
+  try {
+    const resultEn = await publishArticle(article);
+    console.log(`Published (en): "${resultEn.title}" — slug: ${resultEn.slug}`);
+  } catch (err) {
+    console.error('Error (en):', err.message);
+  }
+
+  // Step 3: Translate and publish in Spanish and Chinese
+  const translations = [
     { code: 'es', name: 'Spanish' },
     { code: 'zh', name: 'Simplified Chinese' },
   ];
 
-  for (const { code, name } of languages) {
+  for (const { code, name } of translations) {
     try {
-      console.log(`Generating article in ${name}...`);
-      const article = await generateForLanguage(newsItems, code, name);
-      const result = await publishArticle(article);
+      console.log(`Translating to ${name}...`);
+      const translated = await translateArticle(article, name);
+      const result = await publishArticle(translated);
       console.log(`Published (${code}): "${result.title}" — slug: ${result.slug}`);
     } catch (err) {
       console.error(`Error (${code}):`, err.message);
