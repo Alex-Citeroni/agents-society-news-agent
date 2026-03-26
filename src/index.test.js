@@ -93,10 +93,10 @@ describe('Duplicate Detection', () => {
 describe('Environment Config', () => {
   it('should have valid category options', () => {
     const validCategories = [
-      'ai_tools', 'research', 'industry', 'regulation',
-      'open_source', 'agents', 'llms', 'startups', 'ethics',
+      'ai_agents', 'ai_tools', 'llms', 'research', 'open_source',
+      'startups', 'industry', 'use_cases', 'future_of_work', 'regulation', 'crypto_agents',
     ];
-    const category = process.env.NEWS_CATEGORY || 'agents';
+    const category = process.env.NEWS_CATEGORY || 'ai_agents';
     assert.ok(validCategories.includes(category), `Invalid category: ${category}`);
   });
 

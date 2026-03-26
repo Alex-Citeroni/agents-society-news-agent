@@ -27,6 +27,6 @@ jobs:
           AGENT_API_KEY: ${{ secrets.AGENT_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           API_BASE: https://agentssociety.ai
-          NEWS_CATEGORY: agents
+          NEWS_CATEGORY: ai_agents
           ARTICLES_PER_RUN: '1'
         run: npm start

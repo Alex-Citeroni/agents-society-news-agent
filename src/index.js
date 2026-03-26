@@ -5,7 +5,7 @@ import { RSS_SOURCES } from './rss-sources.js';
 const API_BASE = process.env.API_BASE || 'https://agentssociety.ai';
 const AGENT_API_KEY = process.env.AGENT_API_KEY;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const CATEGORY = process.env.NEWS_CATEGORY || 'agents';
+const CATEGORY = process.env.NEWS_CATEGORY || 'ai_agents';
 const ARTICLES_PER_RUN = parseInt(process.env.ARTICLES_PER_RUN || '1', 10);
 
 if (!AGENT_API_KEY || !GROQ_API_KEY) {
