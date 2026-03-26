@@ -5,6 +5,7 @@ import { getSourcesForCategory } from './rss-sources.js';
 const API_BASE = process.env.API_BASE || 'https://agentssociety.ai';
 const AGENT_API_KEY = process.env.AGENT_API_KEY;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY || '';
 const CATEGORY = process.env.NEWS_CATEGORY || 'ai_agents';
 const ARTICLES_PER_RUN = parseInt(process.env.ARTICLES_PER_RUN || '1', 10);
 
@@ -162,6 +163,7 @@ async function publishArticle(article, translations) {
     summary: article.summary,
     category: CATEGORY,
     source_url: article.source_url,
+    featured_image_url: article.featured_image_url || null,
     status: 'published',
     translations,
   };
@@ -222,6 +224,69 @@ function isDuplicate(newTitle, existingArticles) {
   }
 
   return false;
+}
+
+/**
+ * Search for a relevant featured image via Unsplash
+ */
+async function findFeaturedImage(title) {
+  // Try Unsplash first
+  if (UNSPLASH_ACCESS_KEY) {
+    try {
+      // Extract 2-3 key terms from title for better search
+      const query = title
+        .replace(/[^a-zA-Z0-9 ]/g, '')
+        .split(/\s+/)
+        .filter(w => w.length > 3)
+        .slice(0, 3)
+        .join(' ');
+
+      const url = `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query + ' technology')}&per_page=5&orientation=landscape`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}` },
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.results && data.results.length > 0) {
+          // Pick a random one from top 5 for variety
+          const photo = data.results[Math.floor(Math.random() * Math.min(data.results.length, 5))];
+          const imageUrl = photo.urls?.regular || photo.urls?.small;
+          if (imageUrl) {
+            console.log(`  Image found: Unsplash (by ${photo.user?.name || 'unknown'})`);
+            return imageUrl;
+          }
+        }
+      }
+      console.warn('  Unsplash returned no results');
+    } catch (err) {
+      console.warn(`  Unsplash error: ${err.message}`);
+    }
+  }
+
+  // Fallback: try Pixabay
+  const PIXABAY_KEY = process.env.PIXABAY_API_KEY || '';
+  if (PIXABAY_KEY) {
+    try {
+      const query = title.split(/\s+/).slice(0, 3).join('+');
+      const url = `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent(query + '+technology')}&image_type=photo&orientation=horizontal&per_page=5`;
+      const res = await fetch(url);
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.hits && data.hits.length > 0) {
+          const hit = data.hits[Math.floor(Math.random() * Math.min(data.hits.length, 5))];
+          console.log('  Image found: Pixabay');
+          return hit.webformatURL || hit.largeImageURL;
+        }
+      }
+    } catch (err) {
+      console.warn(`  Pixabay error: ${err.message}`);
+    }
+  }
+
+  console.log('  No featured image found (no API keys or no results)');
+  return null;
 }
 
 /**
@@ -294,7 +359,14 @@ async function main() {
     }
   }
 
-  // Step 3: Publish single article with all translations
+  // Step 3: Find a featured image
+  console.log('Searching for featured image...');
+  const featuredImageUrl = await findFeaturedImage(article.title);
+  if (featuredImageUrl) {
+    article.featured_image_url = featuredImageUrl;
+  }
+
+  // Step 4: Publish single article with all translations
   console.log('Publishing article...');
   const result = await publishArticle(article, translations);
   console.log(`Published: "${result.title}" — slug: ${result.slug}`);
