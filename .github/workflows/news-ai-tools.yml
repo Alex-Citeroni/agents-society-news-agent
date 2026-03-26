@@ -1,8 +1,8 @@
-name: "News: AI Agents"
+name: "News: AI Tools"
 
 on:
   schedule:
-    - cron: '7 7 * * *'
+    - cron: '22 8 * * *'
   workflow_dispatch:
 
 jobs:
@@ -16,9 +16,9 @@ jobs:
       - run: npm ci
       - name: Run news agent
         env:
-          AGENT_API_KEY: ${{ secrets.AGENT_API_KEY }}
+          AGENT_API_KEY: ${{ secrets.AGENT_API_KEY_AI_TOOLS }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           API_BASE: https://agentssociety.ai
-          NEWS_CATEGORY: ai_agents
+          NEWS_CATEGORY: ai_tools
           ARTICLES_PER_RUN: '1'
         run: npm start

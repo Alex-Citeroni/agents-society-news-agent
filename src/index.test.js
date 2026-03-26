@@ -1,9 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { RSS_SOURCES } from './rss-sources.js';
+import { RSS_SOURCES, getSourcesForCategory } from './rss-sources.js';
+import { getAllAgents, getRssSources } from './agents-config.js';
 
 // Import isDuplicate by re-declaring it here (since index.js doesn't export it)
-// We test the logic directly
 function isDuplicate(newTitle, existingArticles) {
   const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
   const newNorm = normalize(newTitle);
@@ -26,11 +26,11 @@ function isDuplicate(newTitle, existingArticles) {
 }
 
 describe('RSS Sources', () => {
-  it('should have at least one source', () => {
-    assert.ok(RSS_SOURCES.length > 0, 'No RSS sources defined');
+  it('should have at least one default source', () => {
+    assert.ok(RSS_SOURCES.length > 0, 'No default RSS sources defined');
   });
 
-  it('each source should have required fields', () => {
+  it('each default source should have required fields', () => {
     for (const source of RSS_SOURCES) {
       assert.ok(source.name, `Source missing name`);
       assert.ok(source.url, `Source ${source.name} missing url`);
@@ -40,10 +40,73 @@ describe('RSS Sources', () => {
     }
   });
 
-  it('all source URLs should be unique', () => {
-    const urls = RSS_SOURCES.map((s) => s.url);
-    const unique = new Set(urls);
-    assert.strictEqual(urls.length, unique.size, 'Duplicate source URLs found');
+  it('getSourcesForCategory returns specialized sources', () => {
+    const sources = getSourcesForCategory('crypto_agents');
+    assert.ok(sources.length > 0, 'crypto_agents should have sources');
+    // Should be different from default
+    assert.notDeepStrictEqual(sources, RSS_SOURCES, 'crypto_agents should have specialized sources');
+  });
+
+  it('getSourcesForCategory falls back to defaults for unknown category', () => {
+    const sources = getSourcesForCategory('nonexistent_category');
+    assert.deepStrictEqual(sources, RSS_SOURCES, 'Unknown category should fall back to defaults');
+  });
+});
+
+describe('Agents Config', () => {
+  it('should have 11 agents', () => {
+    const agents = getAllAgents();
+    assert.strictEqual(agents.length, 11, `Expected 11 agents, got ${agents.length}`);
+  });
+
+  it('each agent should have all required fields', () => {
+    const agents = getAllAgents();
+    for (const agent of agents) {
+      assert.ok(agent.username, `Agent missing username`);
+      assert.ok(agent.display_name, `Agent ${agent.username} missing display_name`);
+      assert.ok(agent.description, `Agent ${agent.username} missing description`);
+      assert.ok(agent.system_prompt, `Agent ${agent.username} missing system_prompt`);
+      assert.ok(agent.category, `Agent ${agent.username} missing category`);
+      assert.ok(Array.isArray(agent.rss_sources), `Agent ${agent.username} missing rss_sources`);
+      assert.ok(agent.rss_sources.length > 0, `Agent ${agent.username} has no rss_sources`);
+    }
+  });
+
+  it('all usernames should be unique', () => {
+    const agents = getAllAgents();
+    const usernames = agents.map(a => a.username);
+    const unique = new Set(usernames);
+    assert.strictEqual(usernames.length, unique.size, 'Duplicate usernames found');
+  });
+
+  it('all categories should be unique', () => {
+    const agents = getAllAgents();
+    const categories = agents.map(a => a.category);
+    const unique = new Set(categories);
+    assert.strictEqual(categories.length, unique.size, 'Duplicate categories found');
+  });
+
+  it('each agent rss_sources should have valid structure', () => {
+    const agents = getAllAgents();
+    for (const agent of agents) {
+      for (const source of agent.rss_sources) {
+        assert.ok(source.name, `Agent ${agent.username}: source missing name`);
+        assert.ok(source.url, `Agent ${agent.username}: source ${source.name} missing url`);
+        assert.ok(source.url.startsWith('http'), `Agent ${agent.username}: source ${source.name} has invalid url`);
+        assert.ok(Array.isArray(source.keywords), `Agent ${agent.username}: source ${source.name} missing keywords`);
+        assert.ok(source.keywords.length > 0, `Agent ${agent.username}: source ${source.name} has empty keywords`);
+      }
+    }
+  });
+
+  it('getRssSources returns correct sources for each category', () => {
+    const agents = getAllAgents();
+    for (const agent of agents) {
+      const sources = getRssSources(agent.category);
+      assert.ok(sources, `getRssSources returned null for ${agent.category}`);
+      assert.strictEqual(sources.length, agent.rss_sources.length,
+        `Source count mismatch for ${agent.category}`);
+    }
   });
 });
 
@@ -76,17 +139,11 @@ describe('Duplicate Detection', () => {
   });
 
   it('should handle empty existing articles', () => {
-    assert.strictEqual(
-      isDuplicate('Some New Article Title', []),
-      false
-    );
+    assert.strictEqual(isDuplicate('Some New Article Title', []), false);
   });
 
   it('should handle short titles', () => {
-    assert.strictEqual(
-      isDuplicate('AI News', existing),
-      false
-    );
+    assert.strictEqual(isDuplicate('AI News', existing), false);
   });
 });
 

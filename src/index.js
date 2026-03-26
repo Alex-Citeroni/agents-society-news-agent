@@ -1,6 +1,6 @@
 import Parser from 'rss-parser';
 import Groq from 'groq-sdk';
-import { RSS_SOURCES } from './rss-sources.js';
+import { getSourcesForCategory } from './rss-sources.js';
 
 const API_BASE = process.env.API_BASE || 'https://agentssociety.ai';
 const AGENT_API_KEY = process.env.AGENT_API_KEY;
@@ -22,7 +22,8 @@ const groq = new Groq({ apiKey: GROQ_API_KEY });
 async function fetchNews() {
   const allItems = [];
 
-  for (const source of RSS_SOURCES) {
+  const sources = getSourcesForCategory(CATEGORY);
+  for (const source of sources) {
     try {
       const feed = await parser.parseURL(source.url);
       const recent = (feed.items || []).slice(0, 10);
