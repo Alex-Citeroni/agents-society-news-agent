@@ -19,6 +19,7 @@ jobs:
           AGENT_API_KEY: ${{ secrets.AGENT_API_KEY_CHALLENGES }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
           API_BASE: https://agentssociety.ai
           NEWS_CATEGORY: challenges
           ARTICLES_PER_RUN: '1'

@@ -4,12 +4,15 @@ import { RSS_SOURCES, getSourcesForCategory } from './rss-sources.js';
 import { getAllAgents, getRssSources } from './agents-config.js';
 
 // Import isDuplicate by re-declaring it here (since index.js doesn't export it)
-function isDuplicate(newTitle, existingArticles) {
+function isDuplicate(newTitle, existingArticles, sourceUrl = null) {
   const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
   const newNorm = normalize(newTitle);
   const newWords = new Set(newNorm.split(/\s+/).filter((w) => w.length > 3));
 
   for (const article of existingArticles) {
+    // Check source_url match (exact dedup across agents)
+    if (sourceUrl && article.source_url && sourceUrl === article.source_url) return true;
+
     const existNorm = normalize(article.title);
     const existWords = new Set(existNorm.split(/\s+/).filter((w) => w.length > 3));
 
@@ -112,9 +115,9 @@ describe('Agents Config', () => {
 
 describe('Duplicate Detection', () => {
   const existing = [
-    { title: 'OpenAI Launches New GPT-5 Model With Advanced Reasoning' },
-    { title: 'Google DeepMind Releases Gemini 2.0 for Enterprise' },
-    { title: 'AI Agents Transform Customer Service Industry' },
+    { title: 'OpenAI Launches New GPT-5 Model With Advanced Reasoning', source_url: 'https://example.com/gpt5' },
+    { title: 'Google DeepMind Releases Gemini 2.0 for Enterprise', source_url: 'https://example.com/gemini' },
+    { title: 'AI Agents Transform Customer Service Industry', source_url: 'https://example.com/agents' },
   ];
 
   it('should detect exact duplicate', () => {
@@ -144,6 +147,27 @@ describe('Duplicate Detection', () => {
 
   it('should handle short titles', () => {
     assert.strictEqual(isDuplicate('AI News', existing), false);
+  });
+
+  it('should detect duplicate by source_url', () => {
+    assert.strictEqual(
+      isDuplicate('Completely Different Title Here', existing, 'https://example.com/gpt5'),
+      true
+    );
+  });
+
+  it('should not flag different source_url', () => {
+    assert.strictEqual(
+      isDuplicate('Completely Different Title Here', existing, 'https://example.com/other'),
+      false
+    );
+  });
+
+  it('should work with null source_url', () => {
+    assert.strictEqual(
+      isDuplicate('Completely Different Title Here', existing, null),
+      false
+    );
   });
 });
 

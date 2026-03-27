@@ -1,6 +1,7 @@
 import Parser from 'rss-parser';
 import Groq from 'groq-sdk';
 import { getSourcesForCategory } from './rss-sources.js';
+import { getAgentConfig } from './agents-config.js';
 
 const API_BASE = process.env.API_BASE || 'https://agentssociety.ai';
 const AGENT_API_KEY = process.env.AGENT_API_KEY;
@@ -8,6 +9,9 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY || '';
 const CATEGORY = process.env.NEWS_CATEGORY || 'ai_agents';
 const ARTICLES_PER_RUN = parseInt(process.env.ARTICLES_PER_RUN || '1', 10);
+const LLM_MODEL = process.env.LLM_MODEL || 'llama-3.3-70b-versatile';
+const FETCH_TIMEOUT_MS = 15000;
+const MAX_LLM_RETRIES = 3;
 
 if (!AGENT_API_KEY || !GROQ_API_KEY) {
   console.error('Missing required env vars: AGENT_API_KEY, GROQ_API_KEY');
@@ -18,22 +22,52 @@ const parser = new Parser({ timeout: 10000 });
 const groq = new Groq({ apiKey: GROQ_API_KEY });
 
 /**
+ * Fetch with timeout using AbortController
+ */
+async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Retry a Groq LLM call with exponential backoff
+ */
+async function callLLMWithRetry(params) {
+  for (let attempt = 1; attempt <= MAX_LLM_RETRIES; attempt++) {
+    try {
+      return await groq.chat.completions.create(params);
+    } catch (err) {
+      const isRetryable = err.status === 429 || err.status === 503 || err.code === 'ECONNRESET' || err.message?.includes('timeout');
+      if (!isRetryable || attempt === MAX_LLM_RETRIES) throw err;
+      const delay = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+      console.warn(`  LLM attempt ${attempt} failed (${err.status || err.code}), retrying in ${delay}ms...`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
+
+/**
  * Fetch recent items from all RSS sources, filter for AI/agent relevance
  */
 async function fetchNews() {
-  const allItems = [];
-
   const sources = getSourcesForCategory(CATEGORY);
-  for (const source of sources) {
-    try {
+
+  const results = await Promise.allSettled(
+    sources.map(async (source) => {
       const feed = await parser.parseURL(source.url);
       const recent = (feed.items || []).slice(0, 10);
+      const items = [];
 
       for (const item of recent) {
         const text = `${item.title || ''} ${item.contentSnippet || ''}`.toLowerCase();
         const isRelevant = source.keywords.some((kw) => text.includes(kw));
         if (isRelevant && item.title) {
-          allItems.push({
+          items.push({
             title: item.title,
             snippet: (item.contentSnippet || '').slice(0, 500),
             link: item.link || '',
@@ -42,35 +76,57 @@ async function fetchNews() {
           });
         }
       }
-    } catch (err) {
-      console.warn(`Failed to fetch ${source.name}: ${err.message}`);
+      return items;
+    })
+  );
+
+  const allItems = [];
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].status === 'fulfilled') {
+      allItems.push(...results[i].value);
+    } else {
+      console.warn(`Failed to fetch ${sources[i].name}: ${results[i].reason?.message}`);
     }
   }
 
-  const shuffled = allItems.sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, ARTICLES_PER_RUN * 3);
+  // Sort by date (newest first), then add slight randomness within same-day items
+  const sorted = allItems.sort((a, b) => {
+    const dateA = a.date ? new Date(a.date).getTime() : 0;
+    const dateB = b.date ? new Date(b.date).getTime() : 0;
+    // If dates are within 24h of each other, randomize order for variety
+    if (Math.abs(dateA - dateB) < 86400000) return Math.random() - 0.5;
+    return dateB - dateA;
+  });
+  return sorted.slice(0, ARTICLES_PER_RUN * 3);
 }
 
 /**
  * Generate the original article in English
  */
 async function generateArticle(newsItems) {
+  const agentConfig = getAgentConfig(CATEGORY);
+  const agentVoice = agentConfig?.system_prompt || '';
+
   const newsList = newsItems
     .map((item, i) => `[${i + 1}] "${item.title}" — ${item.snippet} (Source: ${item.source}, URL: ${item.link})`)
     .join('\n\n');
 
-  const response = await groq.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
+  const response = await callLLMWithRetry({
+    model: LLM_MODEL,
     messages: [
       {
         role: 'system',
         content: `You are an AI news journalist for "Agents Society", a social network where humans and AI agents coexist.
+
+YOUR EDITORIAL VOICE:
+${agentVoice}
 
 RULES:
 - Pick the most interesting story about AI agents or AI technology
 - Write a completely ORIGINAL article (do NOT copy the source)
 - Professional journalistic style, 400-800 words
 - Include analysis about what this means for the AI ecosystem
+- Write with your unique editorial voice described above
 
 Return ONLY valid JSON with these 4 string fields:
 {
@@ -113,8 +169,8 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
  */
 async function generateSeoAndGeo(article) {
   try {
-    const response = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+    const response = await callLLMWithRetry({
+      model: LLM_MODEL,
       messages: [
         {
           role: 'system',
@@ -167,8 +223,8 @@ RULES:
  * Translate an article into another language (including SEO fields)
  */
 async function translateArticle(article, langName) {
-  const response = await groq.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
+  const response = await callLLMWithRetry({
+    model: LLM_MODEL,
     messages: [
       {
         role: 'system',
@@ -235,7 +291,7 @@ async function publishArticle(article, translations) {
     translations,
   };
 
-  const res = await fetch(`${API_BASE}/api/v1/agents/article`, {
+  const res = await fetchWithTimeout(`${API_BASE}/api/v1/agents/article`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -258,7 +314,7 @@ async function publishArticle(article, translations) {
  */
 async function getRecentArticles() {
   try {
-    const res = await fetch(`${API_BASE}/api/v1/agents/article?limit=20`, {
+    const res = await fetchWithTimeout(`${API_BASE}/api/v1/agents/article?limit=20`, {
       headers: { Authorization: `Bearer ${AGENT_API_KEY}` },
     });
     const data = await res.json();
@@ -269,13 +325,27 @@ async function getRecentArticles() {
 }
 
 /**
- * Fetch recent articles from ALL agents (public endpoint) for cross-agent dedup
+ * Fetch recent articles from ALL agents (public endpoint) for cross-agent dedup.
+ * Fetches multiple pages to cover ~2-3 days of articles across all agents.
  */
 async function getGlobalRecentArticles() {
   try {
-    const res = await fetch(`${API_BASE}/api/news?limit=30&sort=latest`);
-    const data = await res.json();
-    return data.articles || [];
+    const articles = [];
+    let cursor = null;
+    const MAX_PAGES = 2;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const url = cursor
+        ? `${API_BASE}/api/news?limit=30&sort=latest&cursor=${cursor}`
+        : `${API_BASE}/api/news?limit=30&sort=latest`;
+      const res = await fetchWithTimeout(url);
+      const data = await res.json();
+      articles.push(...(data.articles || []));
+      if (!data.hasMore || !data.nextCursor) break;
+      cursor = data.nextCursor;
+    }
+
+    return articles;
   } catch {
     return [];
   }
@@ -314,8 +384,8 @@ function isDuplicate(newTitle, existingArticles, sourceUrl = null) {
  */
 async function generateImageKeywords(title, body) {
   try {
-    const response = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+    const response = await callLLMWithRetry({
+      model: LLM_MODEL,
       messages: [
         {
           role: 'system',
@@ -371,7 +441,7 @@ async function searchUnsplash(query) {
   if (!UNSPLASH_ACCESS_KEY) return null;
   try {
     const url = `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=5&orientation=landscape`;
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       headers: { Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}` },
     });
     if (res.ok) {
@@ -399,7 +469,7 @@ async function searchPixabay(query) {
   if (!PIXABAY_KEY) return null;
   try {
     const url = `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent(query)}&image_type=photo&orientation=horizontal&per_page=5`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (res.ok) {
       const data = await res.json();
       if (data.hits && data.hits.length > 0) {
@@ -439,7 +509,7 @@ async function findFeaturedImage(title, body) {
  */
 async function sendHeartbeat() {
   try {
-    await fetch(`${API_BASE}/api/v1/agents/heartbeat`, {
+    await fetchWithTimeout(`${API_BASE}/api/v1/agents/heartbeat`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${AGENT_API_KEY}` },
     });
@@ -483,55 +553,90 @@ async function main() {
 
   console.log(`Found ${freshItems.length} fresh items. Generating article...`);
 
-  // Step 1: Generate original article in English
-  console.log('Generating article in English...');
-  const article = await generateArticle(freshItems);
+  // Step 1: Generate original article in English (retry if title is duplicate)
+  let article = null;
+  let remainingItems = [...freshItems];
+  const MAX_GENERATE_ATTEMPTS = 3;
 
-  if (isDuplicate(article.title, allArticles, article.source_url)) {
-    console.log(`Duplicate detected: "${article.title}". Skipping.`);
-    return;
+  for (let attempt = 1; attempt <= MAX_GENERATE_ATTEMPTS; attempt++) {
+    if (remainingItems.length === 0) {
+      console.log('No more fresh items to try. Exiting.');
+      return;
+    }
+
+    console.log(`Generating article in English (attempt ${attempt}/${MAX_GENERATE_ATTEMPTS})...`);
+    const candidate = await generateArticle(remainingItems);
+
+    if (!isDuplicate(candidate.title, allArticles, candidate.source_url)) {
+      article = candidate;
+      break;
+    }
+
+    console.log(`  Duplicate detected: "${candidate.title}". Retrying with different items...`);
+    // Remove the source item the LLM picked so it tries a different one
+    remainingItems = remainingItems.filter((item) => item.link !== candidate.source_url);
+    allArticles.push({ title: candidate.title, source_url: candidate.source_url });
   }
 
-  // Step 2: Generate SEO metadata and geo-location
-  console.log('Generating SEO metadata and geo-location...');
-  const seo = await generateSeoAndGeo(article);
-  article.seo_title = seo.seo_title;
-  article.meta_description = seo.meta_description;
-  article.tags = seo.tags;
-  article.geo_location = seo.geo_location;
-  article.geo_country_code = seo.geo_country_code;
+  if (!article) {
+    console.log('Could not generate a non-duplicate article after all attempts. Exiting.');
+    return;
+  }
 
   // Calculate reading time from word count
   const wordCount = article.body.split(/\s+/).filter(Boolean).length;
   article.reading_time_minutes = Math.max(1, Math.ceil(wordCount / 200));
 
-  console.log(`  SEO title: ${article.seo_title}`);
-  console.log(`  Tags: ${article.tags.join(', ')}`);
-  if (article.geo_location) console.log(`  Geo: ${article.geo_location} (${article.geo_country_code})`);
-  console.log(`  Reading time: ${article.reading_time_minutes} min`);
-
-  // Step 3: Translate to Spanish and Chinese
-  const translations = { en: { title: article.title, body: article.body, summary: article.summary, seo_title: article.seo_title, meta_description: article.meta_description } };
-
+  // Step 2: Run SEO, translations, and image search in parallel
+  console.log('Generating SEO, translations, and image in parallel...');
   const langs = [
     { code: 'es', name: 'Spanish' },
     { code: 'zh', name: 'Simplified Chinese' },
   ];
 
-  for (const { code, name } of langs) {
-    try {
-      console.log(`Translating to ${name}...`);
-      translations[code] = await translateArticle(article, name);
-    } catch (err) {
-      console.error(`Translation error (${code}):`, err.message);
-    }
+  const [seoResult, imageResult, ...translationResults] = await Promise.allSettled([
+    generateSeoAndGeo(article),
+    findFeaturedImage(article.title, article.body),
+    ...langs.map(({ name }) => translateArticle(article, name)),
+  ]);
+
+  // Apply SEO
+  if (seoResult.status === 'fulfilled') {
+    const seo = seoResult.value;
+    article.seo_title = seo.seo_title;
+    article.meta_description = seo.meta_description;
+    article.tags = seo.tags;
+    article.geo_location = seo.geo_location;
+    article.geo_country_code = seo.geo_country_code;
+    console.log(`  SEO title: ${article.seo_title}`);
+    console.log(`  Tags: ${article.tags.join(', ')}`);
+    if (article.geo_location) console.log(`  Geo: ${article.geo_location} (${article.geo_country_code})`);
+  } else {
+    console.error(`  SEO generation error: ${seoResult.reason?.message}`);
+    article.seo_title = null;
+    article.meta_description = null;
+    article.tags = [];
+    article.geo_location = null;
+    article.geo_country_code = null;
+  }
+  console.log(`  Reading time: ${article.reading_time_minutes} min`);
+
+  // Apply image
+  if (imageResult.status === 'fulfilled' && imageResult.value) {
+    article.featured_image_url = imageResult.value;
+  } else if (imageResult.status === 'rejected') {
+    console.warn(`  Image search error: ${imageResult.reason?.message}`);
   }
 
-  // Step 4: Find a featured image
-  console.log('Searching for featured image...');
-  const featuredImageUrl = await findFeaturedImage(article.title, article.body);
-  if (featuredImageUrl) {
-    article.featured_image_url = featuredImageUrl;
+  // Apply translations
+  const translations = { en: { title: article.title, body: article.body, summary: article.summary, seo_title: article.seo_title, meta_description: article.meta_description } };
+  for (let i = 0; i < langs.length; i++) {
+    if (translationResults[i].status === 'fulfilled') {
+      translations[langs[i].code] = translationResults[i].value;
+      console.log(`  Translated to ${langs[i].name}`);
+    } else {
+      console.error(`  Translation error (${langs[i].code}): ${translationResults[i].reason?.message}`);
+    }
   }
 
   // Step 5: Publish single article with all translations
