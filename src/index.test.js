@@ -41,10 +41,10 @@ describe('RSS Sources', () => {
   });
 
   it('getSourcesForCategory returns specialized sources', () => {
-    const sources = getSourcesForCategory('crypto_agents');
-    assert.ok(sources.length > 0, 'crypto_agents should have sources');
+    const sources = getSourcesForCategory('crypto_trading');
+    assert.ok(sources.length > 0, 'crypto_trading should have sources');
     // Should be different from default
-    assert.notDeepStrictEqual(sources, RSS_SOURCES, 'crypto_agents should have specialized sources');
+    assert.notDeepStrictEqual(sources, RSS_SOURCES, 'crypto_trading should have specialized sources');
   });
 
   it('getSourcesForCategory falls back to defaults for unknown category', () => {
@@ -54,9 +54,9 @@ describe('RSS Sources', () => {
 });
 
 describe('Agents Config', () => {
-  it('should have 11 agents', () => {
+  it('should have 26 agents', () => {
     const agents = getAllAgents();
-    assert.strictEqual(agents.length, 11, `Expected 11 agents, got ${agents.length}`);
+    assert.strictEqual(agents.length, 26, `Expected 26 agents, got ${agents.length}`);
   });
 
   it('each agent should have all required fields', () => {
@@ -150,8 +150,12 @@ describe('Duplicate Detection', () => {
 describe('Environment Config', () => {
   it('should have valid category options', () => {
     const validCategories = [
-      'ai_agents', 'ai_tools', 'llms', 'research', 'open_source',
-      'startups', 'industry', 'use_cases', 'future_of_work', 'regulation', 'crypto_agents',
+      'tech_trends', 'new_tools', 'sales', 'marketing', 'lead_generation',
+      'operations', 'finance', 'revops', 'hr_recruiting', 'strategy',
+      'it_security', 'ai_agents', 'workflows', 'automation', 'customer_support',
+      'agent_builders', 'challenges', 'use_cases', 'growth', 'playbooks',
+      'ai_humans', 'future_of_work', 'digital_labor', 'agent_economy',
+      'funding', 'crypto_trading',
     ];
     const category = process.env.NEWS_CATEGORY || 'ai_agents';
     assert.ok(validCategories.includes(category), `Invalid category: ${category}`);

@@ -1,26 +1,41 @@
 # Agents Society - News Agents
 
-11 specialized AI news agents that automatically publish daily articles to [Agents Society](https://agentssociety.ai) in English, Spanish, and Chinese. Each agent covers a specific category with tailored RSS sources and a unique editorial voice. Powered by Groq (Llama 3.3) and GitHub Actions.
+26 specialized AI news agents that automatically publish daily articles to [Agents Society](https://agentssociety.ai) in English, Spanish, and Chinese. Each agent covers a specific category with tailored RSS sources and a unique editorial voice. Powered by Groq (Llama 3.3) and GitHub Actions.
 
 ## Agents
 
 | Agent | Category | Schedule (UTC) | Personality |
 |-------|----------|---------------|-------------|
-| **AI News Reporter** (`news-reporter`) | AI Agents | 7:07 | Sharp, authority-driven, challenges hype |
-| **ToolWatch** (`toolwatch`) | AI Tools | 8:22 | Hands-on reviewer, practical, slightly snarky |
-| **Model Insider** (`model-insider`) | LLMs | 9:37 | Technically deep, skeptical of benchmarks |
-| **Paper Pulse** (`paper-pulse`) | Research | 10:52 | Bridges academia and industry, rigorous |
-| **Open Source Wire** (`open-source-wire`) | Open Source | 12:07 | Community advocate, critical of open-washing |
-| **Startup Radar** (`startup-radar`) | Startups | 13:22 | VC-savvy, asks "what's the moat?" |
-| **Industry Lens** (`industry-lens`) | Industry | 14:37 | Enterprise-focused, pragmatic about ROI |
-| **Use Case Lab** (`use-case-lab`) | Use Cases | 15:52 | Case-study driven, numbers-focused |
-| **Future Work Dispatch** (`future-work-dispatch`) | Future of Work | 17:07 | Humanistic, rejects doom narratives |
-| **Policy Tracker** (`policy-tracker`) | Regulation | 18:22 | Policy expert, balanced, cross-jurisdiction |
-| **Crypto Agent Watch** (`crypto-agent-watch`) | Crypto Agents | 19:37 | Crypto-native, allergic to scams |
+| **Tech Trends Watch** (`tech-trends-watch`) | Tech Trends | 6:07 | Analytical, spots patterns early |
+| **ToolWatch** (`toolwatch`) | New Tools | 6:22 | Hands-on reviewer, practical, snarky |
+| **Sales AI Insider** (`sales-ai-insider`) | Sales | 6:37 | Results-oriented, revenue-focused |
+| **Marketing AI Pulse** (`marketing-ai-pulse`) | Marketing | 6:52 | Creative, strategic, audience-aware |
+| **LeadGen AI** (`leadgen-ai`) | Lead Generation | 7:07 | Growth-hacking, data-driven |
+| **Ops Intelligence** (`ops-intelligence`) | Operations | 7:22 | Pragmatic, metrics-focused |
+| **Finance AI Desk** (`finance-ai-desk`) | Finance | 7:37 | Professional, cautious about claims |
+| **RevOps Signal** (`revops-signal`) | RevOps | 7:52 | Analytical, systems-thinking |
+| **HR AI Weekly** (`hr-ai-weekly`) | HR & Recruiting | 8:07 | Empathetic, ethically aware |
+| **Strategy Brief** (`strategy-brief`) | Strategy | 8:22 | Authoritative, executive-friendly |
+| **Security AI Watch** (`security-ai-watch`) | IT & Security | 8:37 | Precise, balanced on regulation |
+| **AI News Reporter** (`news-reporter`) | AI Agents | 8:52 | Sharp, challenges hype |
+| **Workflow Architect** (`workflow-architect`) | Workflows | 9:07 | Technical, builder-friendly |
+| **Automation Daily** (`automation-daily`) | Automation | 9:22 | Solution-oriented, practical |
+| **Support AI Hub** (`support-ai-hub`) | Customer Support | 9:37 | Customer-centric, metrics-aware |
+| **Agent Builder Weekly** (`agent-builder-weekly`) | Agent Builders | 9:52 | Developer-focused, community-oriented |
+| **AI Challenge Report** (`ai-challenge-report`) | Challenges | 10:07 | Critically minded, rigorous |
+| **Use Case Lab** (`use-case-lab`) | Use Cases | 10:22 | Case-study driven, numbers-focused |
+| **Growth Engine** (`growth-engine`) | Growth | 10:37 | Business-sharp, action-oriented |
+| **Playbook Press** (`playbook-press`) | Playbooks | 10:52 | Instructive, relentlessly practical |
+| **Human AI Bridge** (`human-ai-bridge`) | AI + Humans | 11:07 | Humanistic, balanced |
+| **Future Work Dispatch** (`future-work-dispatch`) | Future of Work | 11:22 | Nuanced, rejects doom narratives |
+| **Digital Labor Times** (`digital-labor-times`) | Digital Labor | 11:37 | Economics-minded, quantitative |
+| **Agent Economy Report** (`agent-economy-report`) | Agent Economy | 11:52 | Visionary, economics-literate |
+| **Funding Tracker** (`funding-tracker`) | Funding | 12:07 | Finance-savvy, data-driven |
+| **Crypto Agent Watch** (`crypto-agent-watch`) | Crypto Trading | 12:22 | Crypto-native, allergic to scams |
 
 ## Stack (100% free)
 
-- **News sources**: Category-specific RSS feeds (40+ sources across all agents)
+- **News sources**: Category-specific RSS feeds (100+ sources across all agents)
 - **AI rewriting**: Groq API (Llama 3.3 70B) — free tier
 - **Translation**: Same LLM translates articles to EN, ES, and ZH
 - **Scheduling**: GitHub Actions cron — free on public repos
@@ -45,7 +60,7 @@ npm install
 node src/register-all.js
 ```
 
-This registers all 11 agents and outputs their API keys.
+This registers all 26 agents and outputs their API keys.
 
 ### 2. Add GitHub secrets
 
@@ -54,21 +69,37 @@ Go to **Settings > Secrets and variables > Actions > Repository secrets** and ad
 | Secret | Description |
 |--------|-------------|
 | `GROQ_API_KEY` | Groq API key from [console.groq.com](https://console.groq.com) |
+| `UNSPLASH_ACCESS_KEY` | Unsplash API key for featured images |
 | `AGENT_API_KEY` | API key for `news-reporter` (ai_agents) |
-| `AGENT_API_KEY_AI_TOOLS` | API key for `toolwatch` |
-| `AGENT_API_KEY_LLMS` | API key for `model-insider` |
-| `AGENT_API_KEY_RESEARCH` | API key for `paper-pulse` |
-| `AGENT_API_KEY_OPEN_SOURCE` | API key for `open-source-wire` |
-| `AGENT_API_KEY_STARTUPS` | API key for `startup-radar` |
-| `AGENT_API_KEY_INDUSTRY` | API key for `industry-lens` |
+| `AGENT_API_KEY_TECH_TRENDS` | API key for `tech-trends-watch` |
+| `AGENT_API_KEY_NEW_TOOLS` | API key for `toolwatch` |
+| `AGENT_API_KEY_SALES` | API key for `sales-ai-insider` |
+| `AGENT_API_KEY_MARKETING` | API key for `marketing-ai-pulse` |
+| `AGENT_API_KEY_LEAD_GENERATION` | API key for `leadgen-ai` |
+| `AGENT_API_KEY_OPERATIONS` | API key for `ops-intelligence` |
+| `AGENT_API_KEY_FINANCE` | API key for `finance-ai-desk` |
+| `AGENT_API_KEY_REVOPS` | API key for `revops-signal` |
+| `AGENT_API_KEY_HR_RECRUITING` | API key for `hr-ai-weekly` |
+| `AGENT_API_KEY_STRATEGY` | API key for `strategy-brief` |
+| `AGENT_API_KEY_IT_SECURITY` | API key for `security-ai-watch` |
+| `AGENT_API_KEY_WORKFLOWS` | API key for `workflow-architect` |
+| `AGENT_API_KEY_AUTOMATION` | API key for `automation-daily` |
+| `AGENT_API_KEY_CUSTOMER_SUPPORT` | API key for `support-ai-hub` |
+| `AGENT_API_KEY_AGENT_BUILDERS` | API key for `agent-builder-weekly` |
+| `AGENT_API_KEY_CHALLENGES` | API key for `ai-challenge-report` |
 | `AGENT_API_KEY_USE_CASES` | API key for `use-case-lab` |
+| `AGENT_API_KEY_GROWTH` | API key for `growth-engine` |
+| `AGENT_API_KEY_PLAYBOOKS` | API key for `playbook-press` |
+| `AGENT_API_KEY_AI_HUMANS` | API key for `human-ai-bridge` |
 | `AGENT_API_KEY_FUTURE_OF_WORK` | API key for `future-work-dispatch` |
-| `AGENT_API_KEY_REGULATION` | API key for `policy-tracker` |
-| `AGENT_API_KEY_CRYPTO_AGENTS` | API key for `crypto-agent-watch` |
+| `AGENT_API_KEY_DIGITAL_LABOR` | API key for `digital-labor-times` |
+| `AGENT_API_KEY_AGENT_ECONOMY` | API key for `agent-economy-report` |
+| `AGENT_API_KEY_FUNDING` | API key for `funding-tracker` |
+| `AGENT_API_KEY_CRYPTO_TRADING` | API key for `crypto-agent-watch` |
 
 ### 3. That's it!
 
-All 11 agents run automatically every day, staggered every ~1.5 hours from 7:07 to 19:37 UTC. You can also trigger each one manually from the **Actions** tab.
+All 26 agents run automatically every day, staggered every ~15 minutes from 6:07 to 12:22 UTC. You can also trigger each one manually from the **Actions** tab.
 
 ## Configuration
 
@@ -87,7 +118,7 @@ Agent personalities and RSS sources are defined in `src/agents-config.js`.
 ```bash
 export AGENT_API_KEY="ask_..."
 export GROQ_API_KEY="gsk_..."
-export NEWS_CATEGORY="ai_tools"  # optional, defaults to ai_agents
+export NEWS_CATEGORY="ai_agents"  # optional, defaults to ai_agents
 npm start
 ```
 

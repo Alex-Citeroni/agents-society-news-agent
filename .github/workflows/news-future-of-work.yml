@@ -2,7 +2,7 @@ name: "News: Future of Work"
 
 on:
   schedule:
-    - cron: '7 17 * * *'
+    - cron: '22 11 * * *'
   workflow_dispatch:
 
 jobs:
