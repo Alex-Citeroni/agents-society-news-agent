@@ -109,7 +109,62 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
 }
 
 /**
- * Translate an article into another language
+ * Generate SEO metadata and geo-location from the article
+ */
+async function generateSeoAndGeo(article) {
+  try {
+    const response = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'system',
+          content: `You are an SEO specialist. Given an article, generate optimized SEO metadata and geographic information.
+
+Return ONLY valid JSON:
+{
+  "seo_title": "SEO-optimized title, max 60 characters, keyword-rich, compelling for search results",
+  "meta_description": "Meta description, max 155 characters, engaging with a call-to-action, includes primary keyword",
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
+  "geo_location": "City, Country where the news is happening (or null if not location-specific)",
+  "geo_country_code": "2-letter ISO country code (or null if not location-specific)"
+}
+
+RULES:
+- seo_title: Must be different from the article title, shorter and more keyword-focused
+- meta_description: Should entice clicks from search results, include the main topic
+- tags: 3-7 lowercase English tags, relevant to the article content (e.g. "ai agents", "openai", "automation")
+- geo_location: Only include if the article mentions a specific location (e.g. "San Francisco, USA", "London, UK")
+- geo_country_code: ISO 3166-1 alpha-2 code (e.g. "US", "GB", "CN"). null if not location-specific`,
+        },
+        {
+          role: 'user',
+          content: `Title: ${article.title}\n\nSummary: ${article.summary}\n\nBody excerpt: ${article.body.slice(0, 800)}`,
+        },
+      ],
+      temperature: 0.4,
+      max_tokens: 500,
+      response_format: { type: 'json_object' },
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) throw new Error('Empty SEO response');
+
+    const parsed = JSON.parse(content);
+    return {
+      seo_title: (parsed.seo_title || '').slice(0, 70) || null,
+      meta_description: (parsed.meta_description || '').slice(0, 160) || null,
+      tags: Array.isArray(parsed.tags) ? parsed.tags.filter(t => typeof t === 'string').slice(0, 10) : [],
+      geo_location: parsed.geo_location || null,
+      geo_country_code: parsed.geo_country_code?.slice(0, 2)?.toUpperCase() || null,
+    };
+  } catch (err) {
+    console.warn(`  SEO generation error: ${err.message}`);
+    return { seo_title: null, meta_description: null, tags: [], geo_location: null, geo_country_code: null };
+  }
+}
+
+/**
+ * Translate an article into another language (including SEO fields)
  */
 async function translateArticle(article, langName) {
   const response = await groq.chat.completions.create({
@@ -119,18 +174,20 @@ async function translateArticle(article, langName) {
         role: 'system',
         content: `You are a professional translator. Translate the given article into ${langName}. Keep the same tone, style, and structure.
 
-Return ONLY valid JSON with these 3 string fields:
+Return ONLY valid JSON with these 5 string fields:
 {
   "title": "translated title",
   "summary": "translated summary, max 200 characters",
-  "body": "translated full article body, use \\n\\n for paragraph breaks"
+  "body": "translated full article body, use \\n\\n for paragraph breaks",
+  "seo_title": "translated SEO title, max 60 characters",
+  "meta_description": "translated meta description, max 155 characters"
 }
 
 CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragraph breaks. Do NOT use markdown headers. Do NOT break out of the JSON string.`,
       },
       {
         role: 'user',
-        content: `Translate this article into ${langName}:\n\nTitle: ${article.title}\n\nSummary: ${article.summary}\n\nBody:\n${article.body}`,
+        content: `Translate this article into ${langName}:\n\nTitle: ${article.title}\n\nSummary: ${article.summary}\n\nSEO Title: ${article.seo_title || article.title}\n\nMeta Description: ${article.meta_description || article.summary}\n\nBody:\n${article.body}`,
       },
     ],
     temperature: 0.3,
@@ -150,6 +207,8 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
     title: parsed.title,
     summary: (parsed.summary || '').slice(0, 490),
     body: parsed.body,
+    seo_title: (parsed.seo_title || '').slice(0, 70) || null,
+    meta_description: (parsed.meta_description || '').slice(0, 160) || null,
   };
 }
 
@@ -165,6 +224,14 @@ async function publishArticle(article, translations) {
     source_url: article.source_url,
     featured_image_url: article.featured_image_url || null,
     status: 'published',
+    // SEO fields
+    seo_title: article.seo_title || null,
+    meta_description: article.meta_description || null,
+    tags: article.tags || [],
+    reading_time_minutes: article.reading_time_minutes || null,
+    // Geo fields
+    geo_location: article.geo_location || null,
+    geo_country_code: article.geo_country_code || null,
     translations,
   };
 
@@ -425,8 +492,26 @@ async function main() {
     return;
   }
 
-  // Step 2: Translate to Spanish and Chinese
-  const translations = { en: { title: article.title, body: article.body, summary: article.summary } };
+  // Step 2: Generate SEO metadata and geo-location
+  console.log('Generating SEO metadata and geo-location...');
+  const seo = await generateSeoAndGeo(article);
+  article.seo_title = seo.seo_title;
+  article.meta_description = seo.meta_description;
+  article.tags = seo.tags;
+  article.geo_location = seo.geo_location;
+  article.geo_country_code = seo.geo_country_code;
+
+  // Calculate reading time from word count
+  const wordCount = article.body.split(/\s+/).filter(Boolean).length;
+  article.reading_time_minutes = Math.max(1, Math.ceil(wordCount / 200));
+
+  console.log(`  SEO title: ${article.seo_title}`);
+  console.log(`  Tags: ${article.tags.join(', ')}`);
+  if (article.geo_location) console.log(`  Geo: ${article.geo_location} (${article.geo_country_code})`);
+  console.log(`  Reading time: ${article.reading_time_minutes} min`);
+
+  // Step 3: Translate to Spanish and Chinese
+  const translations = { en: { title: article.title, body: article.body, summary: article.summary, seo_title: article.seo_title, meta_description: article.meta_description } };
 
   const langs = [
     { code: 'es', name: 'Spanish' },
@@ -442,14 +527,14 @@ async function main() {
     }
   }
 
-  // Step 3: Find a featured image
+  // Step 4: Find a featured image
   console.log('Searching for featured image...');
   const featuredImageUrl = await findFeaturedImage(article.title, article.body);
   if (featuredImageUrl) {
     article.featured_image_url = featuredImageUrl;
   }
 
-  // Step 4: Publish single article with all translations
+  // Step 5: Publish single article with all translations
   console.log('Publishing article...');
   const result = await publishArticle(article, translations);
   console.log(`Published: "${result.title}" — slug: ${result.slug}`);
