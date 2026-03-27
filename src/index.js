@@ -202,14 +202,30 @@ async function getRecentArticles() {
 }
 
 /**
- * Check if an article with a similar title was already published
+ * Fetch recent articles from ALL agents (public endpoint) for cross-agent dedup
  */
-function isDuplicate(newTitle, existingArticles) {
+async function getGlobalRecentArticles() {
+  try {
+    const res = await fetch(`${API_BASE}/api/news?limit=30&sort=latest`);
+    const data = await res.json();
+    return data.articles || [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Check if an article with a similar title or same source URL was already published
+ */
+function isDuplicate(newTitle, existingArticles, sourceUrl = null) {
   const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
   const newNorm = normalize(newTitle);
   const newWords = new Set(newNorm.split(/\s+/).filter((w) => w.length > 3));
 
   for (const article of existingArticles) {
+    // Check source_url match (exact dedup across agents)
+    if (sourceUrl && article.source_url && sourceUrl === article.source_url) return true;
+
     const existNorm = normalize(article.title);
     const existWords = new Set(existNorm.split(/\s+/).filter((w) => w.length > 3));
 
@@ -227,65 +243,127 @@ function isDuplicate(newTitle, existingArticles) {
 }
 
 /**
- * Search for a relevant featured image via Unsplash
+ * Use LLM to generate descriptive image search keywords from the article
  */
-async function findFeaturedImage(title) {
-  // Try Unsplash first
-  if (UNSPLASH_ACCESS_KEY) {
-    try {
-      // Extract 2-3 key terms from title for better search
-      const query = title
-        .replace(/[^a-zA-Z0-9 ]/g, '')
-        .split(/\s+/)
-        .filter(w => w.length > 3)
-        .slice(0, 3)
-        .join(' ');
+async function generateImageKeywords(title, body) {
+  try {
+    const response = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'system',
+          content: `You generate image search keywords for stock photo searches. Given an article title and body, return 3 different search queries that would find visually relevant, distinct photos.
 
-      const url = `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query + ' technology')}&per_page=5&orientation=landscape`;
-      const res = await fetch(url, {
-        headers: { Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}` },
-      });
+Return ONLY valid JSON:
+{
+  "queries": ["descriptive visual query 1", "descriptive visual query 2", "broader fallback query"]
+}
 
-      if (res.ok) {
-        const data = await res.json();
-        if (data.results && data.results.length > 0) {
-          // Pick a random one from top 5 for variety
-          const photo = data.results[Math.floor(Math.random() * Math.min(data.results.length, 5))];
-          const imageUrl = photo.urls?.regular || photo.urls?.small;
-          if (imageUrl) {
-            console.log(`  Image found: Unsplash (by ${photo.user?.name || 'unknown'})`);
-            return imageUrl;
-          }
-        }
+Rules:
+- Each query should be 2-4 words, describing a VISUAL scene (not abstract concepts)
+- Query 1: specific to the article topic (e.g. "robot arm assembly line", "developer coding laptop")
+- Query 2: related but different angle (e.g. "circuit board closeup", "team brainstorming office")
+- Query 3: broad fallback (e.g. "artificial intelligence technology", "digital innovation")
+- Focus on things a camera can photograph, not abstract ideas
+- Do NOT use brand names or person names`,
+        },
+        {
+          role: 'user',
+          content: `Title: ${title}\n\nBody excerpt: ${body.slice(0, 500)}`,
+        },
+      ],
+      temperature: 0.5,
+      max_tokens: 200,
+      response_format: { type: 'json_object' },
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (content) {
+      const parsed = JSON.parse(content);
+      if (parsed.queries && parsed.queries.length > 0) {
+        return parsed.queries;
       }
-      console.warn('  Unsplash returned no results');
-    } catch (err) {
-      console.warn(`  Unsplash error: ${err.message}`);
     }
+  } catch (err) {
+    console.warn(`  LLM image keywords error: ${err.message}`);
   }
 
-  // Fallback: try Pixabay
+  // Fallback: extract from title
+  const words = title.replace(/[^a-zA-Z0-9 ]/g, '').split(/\s+/).filter(w => w.length > 3);
+  return [
+    words.slice(0, 3).join(' ') + ' technology',
+    words.slice(0, 2).join(' '),
+    'artificial intelligence technology',
+  ];
+}
+
+/**
+ * Search Unsplash for a photo matching the query
+ */
+async function searchUnsplash(query) {
+  if (!UNSPLASH_ACCESS_KEY) return null;
+  try {
+    const url = `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=5&orientation=landscape`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}` },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.results && data.results.length > 0) {
+        const photo = data.results[Math.floor(Math.random() * Math.min(data.results.length, 5))];
+        const imageUrl = photo.urls?.regular || photo.urls?.small;
+        if (imageUrl) {
+          console.log(`  Image found: Unsplash "${query}" (by ${photo.user?.name || 'unknown'})`);
+          return imageUrl;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`  Unsplash error for "${query}": ${err.message}`);
+  }
+  return null;
+}
+
+/**
+ * Search Pixabay for a photo matching the query
+ */
+async function searchPixabay(query) {
   const PIXABAY_KEY = process.env.PIXABAY_API_KEY || '';
-  if (PIXABAY_KEY) {
-    try {
-      const query = title.split(/\s+/).slice(0, 3).join('+');
-      const url = `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent(query + '+technology')}&image_type=photo&orientation=horizontal&per_page=5`;
-      const res = await fetch(url);
-
-      if (res.ok) {
-        const data = await res.json();
-        if (data.hits && data.hits.length > 0) {
-          const hit = data.hits[Math.floor(Math.random() * Math.min(data.hits.length, 5))];
-          console.log('  Image found: Pixabay');
-          return hit.webformatURL || hit.largeImageURL;
-        }
+  if (!PIXABAY_KEY) return null;
+  try {
+    const url = `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent(query)}&image_type=photo&orientation=horizontal&per_page=5`;
+    const res = await fetch(url);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.hits && data.hits.length > 0) {
+        const hit = data.hits[Math.floor(Math.random() * Math.min(data.hits.length, 5))];
+        console.log(`  Image found: Pixabay "${query}"`);
+        return hit.webformatURL || hit.largeImageURL;
       }
-    } catch (err) {
-      console.warn(`  Pixabay error: ${err.message}`);
     }
+  } catch (err) {
+    console.warn(`  Pixabay error for "${query}": ${err.message}`);
+  }
+  return null;
+}
+
+/**
+ * Search for a relevant featured image with LLM-powered keywords and retry strategy
+ */
+async function findFeaturedImage(title, body) {
+  const queries = await generateImageKeywords(title, body);
+  console.log(`  Image search queries: ${JSON.stringify(queries)}`);
+
+  // Try each query on Unsplash first, then Pixabay
+  for (const query of queries) {
+    const unsplashResult = await searchUnsplash(query);
+    if (unsplashResult) return unsplashResult;
+
+    const pixabayResult = await searchPixabay(query);
+    if (pixabayResult) return pixabayResult;
   }
 
-  console.log('  No featured image found (no API keys or no results)');
+  console.warn('  No featured image found after all attempts');
   return null;
 }
 
@@ -319,12 +397,17 @@ async function main() {
     return;
   }
 
-  // Check for duplicates against recent articles
+  // Check for duplicates against recent articles (own + all agents)
   console.log('Checking for duplicate articles...');
-  const recentArticles = await getRecentArticles();
+  const [recentArticles, globalArticles] = await Promise.all([
+    getRecentArticles(),
+    getGlobalRecentArticles(),
+  ]);
+  const allArticles = [...recentArticles, ...globalArticles];
+  console.log(`  Loaded ${recentArticles.length} own + ${globalArticles.length} global articles for dedup`);
 
-  // Filter out news items that match already published articles
-  const freshItems = newsItems.filter((item) => !isDuplicate(item.title, recentArticles));
+  // Filter out news items that match already published articles (by title or source_url)
+  const freshItems = newsItems.filter((item) => !isDuplicate(item.title, allArticles, item.link));
 
   if (freshItems.length === 0) {
     console.log('All news items already covered. Exiting.');
@@ -337,7 +420,7 @@ async function main() {
   console.log('Generating article in English...');
   const article = await generateArticle(freshItems);
 
-  if (isDuplicate(article.title, recentArticles)) {
+  if (isDuplicate(article.title, allArticles, article.source_url)) {
     console.log(`Duplicate detected: "${article.title}". Skipping.`);
     return;
   }
@@ -361,7 +444,7 @@ async function main() {
 
   // Step 3: Find a featured image
   console.log('Searching for featured image...');
-  const featuredImageUrl = await findFeaturedImage(article.title);
+  const featuredImageUrl = await findFeaturedImage(article.title, article.body);
   if (featuredImageUrl) {
     article.featured_image_url = featuredImageUrl;
   }
