@@ -32,7 +32,7 @@ const parser = new Parser({ timeout: 10000 });
 function buildProviders() {
   const providers = [];
 
-  // Primary: Cerebras (1M TPD free, 3000 tok/s, best quality with GPT-OSS 120B)
+  // Primary: Cerebras (1M TPD free, 3000 tok/s)
   if (CEREBRAS_API_KEY) {
     providers.push({
       name: 'cerebras',
@@ -116,7 +116,9 @@ function writeCache(items) {
 async function callLLMWithRetry(params) {
   let lastError = null;
 
-  for (const provider of LLM_PROVIDERS) {
+  for (let pi = 0; pi < LLM_PROVIDERS.length; pi++) {
+    const provider = LLM_PROVIDERS[pi];
+
     for (let attempt = 1; attempt <= MAX_LLM_RETRIES; attempt++) {
       try {
         const { model, ...rest } = params;
@@ -129,7 +131,11 @@ async function callLLMWithRetry(params) {
         lastError = err;
         const isRetryable = err.status === 429 || err.status === 503 || err.code === 'ECONNRESET' || err.message?.includes('timeout');
 
-        if (!isRetryable) throw err;
+        // Non-retryable error (404, 400, auth, etc.) — skip to next provider
+        if (!isRetryable) {
+          console.warn(`  ${provider.name}: non-retryable error (${err.status || err.code}: ${err.message}), trying next provider...`);
+          break;
+        }
 
         const isDailyLimit = err.headers?.['x-should-retry'] === 'false';
 

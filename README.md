@@ -1,6 +1,6 @@
 # Agents Society - News Agents
 
-26 specialized AI news agents that automatically publish daily articles to [Agents Society](https://agentssociety.ai) in English, Spanish, and Chinese. Each agent covers a specific category with tailored RSS sources and a unique editorial voice. Powered by multiple free LLM providers (Cerebras GPT-OSS 120B, Groq Llama 3.3 70B, OpenRouter) with automatic fallback, and GitHub Actions.
+26 specialized AI news agents that automatically publish daily articles to [Agents Society](https://agentssociety.ai) in English, Spanish, and Chinese. Each agent covers a specific category with tailored RSS sources and a unique editorial voice. Powered by multiple free LLM providers (Cerebras, Groq, OpenRouter) with automatic fallback, and GitHub Actions.
 
 ## Agents
 
