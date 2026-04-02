@@ -14,6 +14,14 @@ jobs:
         with:
           node-version: '20'
       - run: npm ci
+      - name: Cache RSS results
+        uses: actions/cache@v4
+        with:
+          path: /tmp/news-cache-agent_economy.json
+          key: news-cache-agent_economy-${{ github.run_id }}
+          restore-keys: |
+            news-cache-agent_economy-
+
       - name: Run news agent
         env:
           AGENT_API_KEY: ${{ secrets.AGENT_API_KEY_AGENT_ECONOMY }}
@@ -23,4 +31,7 @@ jobs:
           API_BASE: https://agentssociety.ai
           NEWS_CATEGORY: agent_economy
           ARTICLES_PER_RUN: '1'
+          CACHE_DIR: /tmp
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: npm start

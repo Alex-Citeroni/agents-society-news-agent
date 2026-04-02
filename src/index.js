@@ -1,17 +1,21 @@
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import Parser from 'rss-parser';
 import Groq from 'groq-sdk';
+import OpenAI from 'openai';
 import { getSourcesForCategory } from './rss-sources.js';
 import { getAgentConfig } from './agents-config.js';
 
 const API_BASE = process.env.API_BASE || 'https://agentssociety.ai';
 const AGENT_API_KEY = process.env.AGENT_API_KEY;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const CEREBRAS_API_KEY = process.env.CEREBRAS_API_KEY || '';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY || '';
 const CATEGORY = process.env.NEWS_CATEGORY || 'ai_agents';
 const ARTICLES_PER_RUN = parseInt(process.env.ARTICLES_PER_RUN || '1', 10);
-const LLM_MODEL = process.env.LLM_MODEL || 'llama-3.3-70b-versatile';
 const FETCH_TIMEOUT_MS = 15000;
-const MAX_LLM_RETRIES = 3;
+const MAX_LLM_RETRIES = 5;
+const MAX_RETRY_WAIT_MS = 120_000; // max 2 minutes wait per retry
 
 if (!AGENT_API_KEY || !GROQ_API_KEY) {
   console.error('Missing required env vars: AGENT_API_KEY, GROQ_API_KEY');
@@ -19,7 +23,46 @@ if (!AGENT_API_KEY || !GROQ_API_KEY) {
 }
 
 const parser = new Parser({ timeout: 10000 });
-const groq = new Groq({ apiKey: GROQ_API_KEY });
+
+/**
+ * Build ordered list of LLM providers.
+ * Each provider has: name, client, model, available flag.
+ * Providers are tried in order; unavailable ones (no API key) are skipped.
+ */
+function buildProviders() {
+  const providers = [];
+
+  // Primary: Cerebras (1M TPD free, 3000 tok/s, best quality with GPT-OSS 120B)
+  if (CEREBRAS_API_KEY) {
+    providers.push({
+      name: 'cerebras',
+      client: new OpenAI({ apiKey: CEREBRAS_API_KEY, baseURL: 'https://api.cerebras.ai/v1' }),
+      model: 'gpt-oss-120b',
+    });
+  }
+
+  // Fallback 1: Groq (100K TPD free, fast)
+  if (GROQ_API_KEY) {
+    providers.push({
+      name: 'groq',
+      client: new Groq({ apiKey: GROQ_API_KEY }),
+      model: 'llama-3.3-70b-versatile',
+    });
+  }
+
+  // Fallback 2: OpenRouter (free models, 200 req/day)
+  if (OPENROUTER_API_KEY) {
+    providers.push({
+      name: 'openrouter',
+      client: new OpenAI({ apiKey: OPENROUTER_API_KEY, baseURL: 'https://openrouter.ai/api/v1' }),
+      model: 'meta-llama/llama-3.3-70b-instruct:free',
+    });
+  }
+
+  return providers;
+}
+
+const LLM_PROVIDERS = buildProviders();
 
 /**
  * Fetch with timeout using AbortController
@@ -34,21 +77,79 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS)
   }
 }
 
+const CACHE_DIR = process.env.CACHE_DIR || '/tmp';
+const CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000; // 6 hours
+
 /**
- * Retry a Groq LLM call with exponential backoff
+ * Read cached fresh items if available and not expired
+ */
+function readCache() {
+  const path = `${CACHE_DIR}/news-cache-${CATEGORY}.json`;
+  try {
+    if (!existsSync(path)) return null;
+    const data = JSON.parse(readFileSync(path, 'utf-8'));
+    if (Date.now() - data.timestamp > CACHE_MAX_AGE_MS) return null;
+    console.log(`  Using cached news items (${data.items.length} items, cached ${Math.round((Date.now() - data.timestamp) / 60000)}m ago)`);
+    return data.items;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Save fresh items to cache for retry resilience
+ */
+function writeCache(items) {
+  const path = `${CACHE_DIR}/news-cache-${CATEGORY}.json`;
+  try {
+    writeFileSync(path, JSON.stringify({ timestamp: Date.now(), items }));
+  } catch (err) {
+    console.warn(`  Cache write failed: ${err.message}`);
+  }
+}
+
+/**
+ * Call LLM with retry, exponential backoff, and multi-provider fallback.
+ * Tries each provider in order. On rate limit, moves to next provider.
+ * Within each provider, retries with exponential backoff.
  */
 async function callLLMWithRetry(params) {
-  for (let attempt = 1; attempt <= MAX_LLM_RETRIES; attempt++) {
-    try {
-      return await groq.chat.completions.create(params);
-    } catch (err) {
-      const isRetryable = err.status === 429 || err.status === 503 || err.code === 'ECONNRESET' || err.message?.includes('timeout');
-      if (!isRetryable || attempt === MAX_LLM_RETRIES) throw err;
-      const delay = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
-      console.warn(`  LLM attempt ${attempt} failed (${err.status || err.code}), retrying in ${delay}ms...`);
-      await new Promise((r) => setTimeout(r, delay));
+  let lastError = null;
+
+  for (const provider of LLM_PROVIDERS) {
+    for (let attempt = 1; attempt <= MAX_LLM_RETRIES; attempt++) {
+      try {
+        const { model, ...rest } = params;
+        const result = await provider.client.chat.completions.create({
+          ...rest,
+          model: provider.model,
+        });
+        return result;
+      } catch (err) {
+        lastError = err;
+        const isRetryable = err.status === 429 || err.status === 503 || err.code === 'ECONNRESET' || err.message?.includes('timeout');
+
+        if (!isRetryable) throw err;
+
+        const isDailyLimit = err.headers?.['x-should-retry'] === 'false';
+
+        // Daily limit or last retry — try next provider
+        if (isDailyLimit || attempt === MAX_LLM_RETRIES) {
+          console.warn(`  ${provider.name}: ${isDailyLimit ? 'daily limit reached' : 'max retries exhausted'}, trying next provider...`);
+          break;
+        }
+
+        // Exponential backoff with retry-after support
+        const retryAfterSec = parseInt(err.headers?.['retry-after'], 10) || 0;
+        const backoff = 1000 * Math.pow(2, attempt - 1);
+        const delay = Math.min(retryAfterSec > 0 ? retryAfterSec * 1000 : backoff, MAX_RETRY_WAIT_MS);
+        console.warn(`  ${provider.name}: attempt ${attempt} failed (${err.status || err.code}), retrying in ${Math.round(delay / 1000)}s...`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
     }
   }
+
+  throw lastError || new Error('All LLM providers failed');
 }
 
 /**
@@ -101,7 +202,7 @@ async function fetchNews() {
 }
 
 /**
- * Generate the original article in English
+ * Generate the original article in English with SEO metadata and geo-location
  */
 async function generateArticle(newsItems) {
   const agentConfig = getAgentConfig(CATEGORY);
@@ -112,7 +213,6 @@ async function generateArticle(newsItems) {
     .join('\n\n');
 
   const response = await callLLMWithRetry({
-    model: LLM_MODEL,
     messages: [
       {
         role: 'system',
@@ -121,19 +221,31 @@ async function generateArticle(newsItems) {
 YOUR EDITORIAL VOICE:
 ${agentVoice}
 
-RULES:
+ARTICLE RULES:
 - Pick the most interesting story about AI agents or AI technology
 - Write a completely ORIGINAL article (do NOT copy the source)
 - Professional journalistic style, 400-800 words
 - Include analysis about what this means for the AI ecosystem
 - Write with your unique editorial voice described above
 
-Return ONLY valid JSON with these 4 string fields:
+SEO RULES:
+- seo_title: Different from the article title, shorter, keyword-focused, max 60 chars
+- meta_description: Entice clicks from search results, max 155 chars
+- tags: 3-7 lowercase English tags (e.g. "ai agents", "openai", "automation")
+- geo_location: Only if the article mentions a specific location (e.g. "San Francisco, USA"). null otherwise
+- geo_country_code: ISO 3166-1 alpha-2 code (e.g. "US", "GB"). null if not location-specific
+
+Return ONLY valid JSON:
 {
   "title": "article title",
   "summary": "1-2 sentence summary, max 200 characters",
   "body": "full article body, use plain text with paragraph breaks using \\n\\n",
-  "source_url": "URL of the original news"
+  "source_url": "URL of the original news",
+  "seo_title": "SEO-optimized title, max 60 characters",
+  "meta_description": "meta description, max 155 characters",
+  "tags": ["tag1", "tag2", "tag3"],
+  "geo_location": "City, Country or null",
+  "geo_country_code": "2-letter ISO code or null"
 }
 
 CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragraph breaks. Do NOT use markdown headers. Do NOT break out of the JSON string.`,
@@ -144,12 +256,12 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
       },
     ],
     temperature: 0.7,
-    max_tokens: 3000,
+    max_tokens: 2500,
     response_format: { type: 'json_object' },
   });
 
   const content = response.choices[0]?.message?.content;
-  if (!content) throw new Error('Empty response from Groq');
+  if (!content) throw new Error('Empty response from LLM');
 
   const parsed = JSON.parse(content);
   if (!parsed.title || !parsed.body) {
@@ -161,62 +273,12 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
     summary: (parsed.summary || '').slice(0, 490),
     body: parsed.body,
     source_url: parsed.source_url || newsItems[0]?.link || null,
+    seo_title: (parsed.seo_title || '').slice(0, 70) || null,
+    meta_description: (parsed.meta_description || '').slice(0, 160) || null,
+    tags: Array.isArray(parsed.tags) ? parsed.tags.filter(t => typeof t === 'string').slice(0, 10) : [],
+    geo_location: parsed.geo_location || null,
+    geo_country_code: parsed.geo_country_code?.slice(0, 2)?.toUpperCase() || null,
   };
-}
-
-/**
- * Generate SEO metadata and geo-location from the article
- */
-async function generateSeoAndGeo(article) {
-  try {
-    const response = await callLLMWithRetry({
-      model: LLM_MODEL,
-      messages: [
-        {
-          role: 'system',
-          content: `You are an SEO specialist. Given an article, generate optimized SEO metadata and geographic information.
-
-Return ONLY valid JSON:
-{
-  "seo_title": "SEO-optimized title, max 60 characters, keyword-rich, compelling for search results",
-  "meta_description": "Meta description, max 155 characters, engaging with a call-to-action, includes primary keyword",
-  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
-  "geo_location": "City, Country where the news is happening (or null if not location-specific)",
-  "geo_country_code": "2-letter ISO country code (or null if not location-specific)"
-}
-
-RULES:
-- seo_title: Must be different from the article title, shorter and more keyword-focused
-- meta_description: Should entice clicks from search results, include the main topic
-- tags: 3-7 lowercase English tags, relevant to the article content (e.g. "ai agents", "openai", "automation")
-- geo_location: Only include if the article mentions a specific location (e.g. "San Francisco, USA", "London, UK")
-- geo_country_code: ISO 3166-1 alpha-2 code (e.g. "US", "GB", "CN"). null if not location-specific`,
-        },
-        {
-          role: 'user',
-          content: `Title: ${article.title}\n\nSummary: ${article.summary}\n\nBody excerpt: ${article.body.slice(0, 800)}`,
-        },
-      ],
-      temperature: 0.4,
-      max_tokens: 500,
-      response_format: { type: 'json_object' },
-    });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error('Empty SEO response');
-
-    const parsed = JSON.parse(content);
-    return {
-      seo_title: (parsed.seo_title || '').slice(0, 70) || null,
-      meta_description: (parsed.meta_description || '').slice(0, 160) || null,
-      tags: Array.isArray(parsed.tags) ? parsed.tags.filter(t => typeof t === 'string').slice(0, 10) : [],
-      geo_location: parsed.geo_location || null,
-      geo_country_code: parsed.geo_country_code?.slice(0, 2)?.toUpperCase() || null,
-    };
-  } catch (err) {
-    console.warn(`  SEO generation error: ${err.message}`);
-    return { seo_title: null, meta_description: null, tags: [], geo_location: null, geo_country_code: null };
-  }
 }
 
 /**
@@ -224,7 +286,6 @@ RULES:
  */
 async function translateArticle(article, langName) {
   const response = await callLLMWithRetry({
-    model: LLM_MODEL,
     messages: [
       {
         role: 'system',
@@ -247,7 +308,7 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
       },
     ],
     temperature: 0.3,
-    max_tokens: 3000,
+    max_tokens: 2000,
     response_format: { type: 'json_object' },
   });
 
@@ -385,7 +446,6 @@ function isDuplicate(newTitle, existingArticles, sourceUrl = null) {
 async function generateImageKeywords(title, body) {
   try {
     const response = await callLLMWithRetry({
-      model: LLM_MODEL,
       messages: [
         {
           role: 'system',
@@ -523,32 +583,49 @@ async function sendHeartbeat() {
  */
 async function main() {
   console.log(`[${new Date().toISOString()}] News agent starting...`);
+  console.log(`  LLM providers: ${LLM_PROVIDERS.map(p => `${p.name} (${p.model})`).join(' → ')}`);
 
   await sendHeartbeat();
 
-  console.log('Fetching news from RSS feeds...');
-  const newsItems = await fetchNews();
+  // Try to use cached fresh items first (resilience for retries after LLM failures)
+  let freshItems = readCache();
+  let allArticles = [];
 
-  if (newsItems.length === 0) {
-    console.log('No relevant news found. Exiting.');
-    return;
-  }
+  if (!freshItems) {
+    console.log('Fetching news from RSS feeds...');
+    const newsItems = await fetchNews();
 
-  // Check for duplicates against recent articles (own + all agents)
-  console.log('Checking for duplicate articles...');
-  const [recentArticles, globalArticles] = await Promise.all([
-    getRecentArticles(),
-    getGlobalRecentArticles(),
-  ]);
-  const allArticles = [...recentArticles, ...globalArticles];
-  console.log(`  Loaded ${recentArticles.length} own + ${globalArticles.length} global articles for dedup`);
+    if (newsItems.length === 0) {
+      console.log('No relevant news found. Exiting.');
+      return;
+    }
 
-  // Filter out news items that match already published articles (by title or source_url)
-  const freshItems = newsItems.filter((item) => !isDuplicate(item.title, allArticles, item.link));
+    // Check for duplicates against recent articles (own + all agents)
+    console.log('Checking for duplicate articles...');
+    const [recentArticles, globalArticles] = await Promise.all([
+      getRecentArticles(),
+      getGlobalRecentArticles(),
+    ]);
+    allArticles = [...recentArticles, ...globalArticles];
+    console.log(`  Loaded ${recentArticles.length} own + ${globalArticles.length} global articles for dedup`);
 
-  if (freshItems.length === 0) {
-    console.log('All news items already covered. Exiting.');
-    return;
+    // Filter out news items that match already published articles (by title or source_url)
+    freshItems = newsItems.filter((item) => !isDuplicate(item.title, allArticles, item.link));
+
+    if (freshItems.length === 0) {
+      console.log('All news items already covered. Exiting.');
+      return;
+    }
+
+    // Cache fresh items for retry resilience
+    writeCache(freshItems);
+  } else {
+    // Still need allArticles for dedup check on generated article
+    const [recentArticles, globalArticles] = await Promise.all([
+      getRecentArticles(),
+      getGlobalRecentArticles(),
+    ]);
+    allArticles = [...recentArticles, ...globalArticles];
   }
 
   console.log(`Found ${freshItems.length} fresh items. Generating article...`);
@@ -587,39 +664,23 @@ async function main() {
   const wordCount = article.body.split(/\s+/).filter(Boolean).length;
   article.reading_time_minutes = Math.max(1, Math.ceil(wordCount / 200));
 
-  // Step 2: Run SEO, translations, and image search in parallel
-  console.log('Generating SEO, translations, and image in parallel...');
+  // Log SEO info (already included in article generation)
+  console.log(`  SEO title: ${article.seo_title}`);
+  console.log(`  Tags: ${(article.tags || []).join(', ')}`);
+  if (article.geo_location) console.log(`  Geo: ${article.geo_location} (${article.geo_country_code})`);
+  console.log(`  Reading time: ${article.reading_time_minutes} min`);
+
+  // Step 2: Run translations and image search in parallel
+  console.log('Generating translations and image in parallel...');
   const langs = [
     { code: 'es', name: 'Spanish' },
     { code: 'zh', name: 'Simplified Chinese' },
   ];
 
-  const [seoResult, imageResult, ...translationResults] = await Promise.allSettled([
-    generateSeoAndGeo(article),
+  const [imageResult, ...translationResults] = await Promise.allSettled([
     findFeaturedImage(article.title, article.body),
     ...langs.map(({ name }) => translateArticle(article, name)),
   ]);
-
-  // Apply SEO
-  if (seoResult.status === 'fulfilled') {
-    const seo = seoResult.value;
-    article.seo_title = seo.seo_title;
-    article.meta_description = seo.meta_description;
-    article.tags = seo.tags;
-    article.geo_location = seo.geo_location;
-    article.geo_country_code = seo.geo_country_code;
-    console.log(`  SEO title: ${article.seo_title}`);
-    console.log(`  Tags: ${article.tags.join(', ')}`);
-    if (article.geo_location) console.log(`  Geo: ${article.geo_location} (${article.geo_country_code})`);
-  } else {
-    console.error(`  SEO generation error: ${seoResult.reason?.message}`);
-    article.seo_title = null;
-    article.meta_description = null;
-    article.tags = [];
-    article.geo_location = null;
-    article.geo_country_code = null;
-  }
-  console.log(`  Reading time: ${article.reading_time_minutes} min`);
 
   // Apply image
   if (imageResult.status === 'fulfilled' && imageResult.value) {
