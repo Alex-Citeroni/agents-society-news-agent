@@ -32,22 +32,16 @@ const parser = new Parser({ timeout: 10000 });
 function buildProviders() {
   const providers = [];
 
-  // Primary: Cerebras (1M TPD free, 3000 tok/s)
+  // Primary: Cerebras Qwen 235B (1M TPD free, 3000 tok/s, best quality)
   if (CEREBRAS_API_KEY) {
-    const cerebrasClient = new OpenAI({ apiKey: CEREBRAS_API_KEY, baseURL: 'https://api.cerebras.ai/v1' });
     providers.push({
       name: 'cerebras',
-      client: cerebrasClient,
+      client: new OpenAI({ apiKey: CEREBRAS_API_KEY, baseURL: 'https://api.cerebras.ai/v1' }),
       model: 'qwen-3-235b-a22b-instruct-2507',
-    });
-    providers.push({
-      name: 'cerebras-llama',
-      client: cerebrasClient,
-      model: 'llama3.1-8b',
     });
   }
 
-  // Fallback 1: Groq (100K TPD free, fast)
+  // Fallback 1: Groq Llama 70B (100K TPD free, fast, good quality)
   if (GROQ_API_KEY) {
     providers.push({
       name: 'groq',
@@ -56,7 +50,7 @@ function buildProviders() {
     });
   }
 
-  // Fallback 2: OpenRouter (free auto-router distributes across all free models)
+  // Fallback 2: OpenRouter free auto-router (distributes across all free models)
   if (OPENROUTER_API_KEY) {
     const orClient = new OpenAI({ apiKey: OPENROUTER_API_KEY, baseURL: 'https://openrouter.ai/api/v1' });
     providers.push({
@@ -68,6 +62,15 @@ function buildProviders() {
       name: 'openrouter-gemma',
       client: orClient,
       model: 'google/gemma-3-27b-it:free',
+    });
+  }
+
+  // Last resort: Cerebras Llama 8B (fast but lower quality, better than nothing)
+  if (CEREBRAS_API_KEY) {
+    providers.push({
+      name: 'cerebras-llama',
+      client: new OpenAI({ apiKey: CEREBRAS_API_KEY, baseURL: 'https://api.cerebras.ai/v1' }),
+      model: 'llama3.1-8b',
     });
   }
 
@@ -121,6 +124,32 @@ function writeCache(items) {
 }
 
 /**
+ * Extract JSON from LLM response that may contain markdown fences or extra text.
+ */
+function extractJSON(text) {
+  // Try direct parse first
+  try { return JSON.parse(text); } catch { }
+
+  // Try extracting from markdown code fence
+  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+  if (fenceMatch) {
+    try { return JSON.parse(fenceMatch[1].trim()); } catch { }
+  }
+
+  // Try finding the first { ... } block
+  const braceStart = text.indexOf('{');
+  const braceEnd = text.lastIndexOf('}');
+  if (braceStart !== -1 && braceEnd > braceStart) {
+    try { return JSON.parse(text.slice(braceStart, braceEnd + 1)); } catch { }
+  }
+
+  throw new Error(`Could not extract valid JSON from response: ${text.slice(0, 200)}`);
+}
+
+/** Providers that support response_format: json_object */
+const JSON_MODE_PROVIDERS = new Set(['cerebras', 'cerebras-llama', 'groq']);
+
+/**
  * Call LLM with retry, exponential backoff, and multi-provider fallback.
  * Tries each provider in order. On rate limit, moves to next provider.
  * Within each provider, retries with exponential backoff.
@@ -133,11 +162,13 @@ async function callLLMWithRetry(params) {
 
     for (let attempt = 1; attempt <= MAX_LLM_RETRIES; attempt++) {
       try {
-        const { model, ...rest } = params;
-        const result = await provider.client.chat.completions.create({
-          ...rest,
-          model: provider.model,
-        });
+        const { model, response_format, ...rest } = params;
+        // Only pass response_format to providers that reliably support it
+        const createParams = { ...rest, model: provider.model };
+        if (response_format && JSON_MODE_PROVIDERS.has(provider.name)) {
+          createParams.response_format = response_format;
+        }
+        const result = await provider.client.chat.completions.create(createParams);
         return result;
       } catch (err) {
         lastError = err;
@@ -283,7 +314,7 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error('Empty response from LLM');
 
-  const parsed = JSON.parse(content);
+  const parsed = extractJSON(content);
   if (!parsed.title || !parsed.body) {
     throw new Error('Missing title or body in response');
   }
@@ -335,7 +366,7 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error(`Empty translation response (${langName})`);
 
-  const parsed = JSON.parse(content);
+  const parsed = extractJSON(content);
   if (!parsed.title || !parsed.body) {
     throw new Error(`Missing title or body in translation (${langName})`);
   }
@@ -496,7 +527,7 @@ Rules:
 
     const content = response.choices[0]?.message?.content;
     if (content) {
-      const parsed = JSON.parse(content);
+      const parsed = extractJSON(content);
       if (parsed.queries && parsed.queries.length > 0) {
         return parsed.queries;
       }
