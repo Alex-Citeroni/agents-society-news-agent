@@ -275,7 +275,7 @@ ${agentVoice}
 ARTICLE RULES:
 - Pick the most interesting story about AI agents or AI technology
 - Write a completely ORIGINAL article (do NOT copy the source)
-- Professional journalistic style, 400-800 words
+- Professional journalistic style, 300-500 words
 - Include analysis about what this means for the AI ecosystem
 - Write with your unique editorial voice described above
 
@@ -307,12 +307,18 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
       },
     ],
     temperature: 0.7,
-    max_tokens: 2500,
+    max_tokens: 4096,
     response_format: { type: 'json_object' },
   });
 
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error('Empty response from LLM');
+
+  // Detect truncated response (model hit token limit mid-JSON)
+  const finishReason = response.choices[0]?.finish_reason;
+  if (finishReason === 'length') {
+    throw new Error('Response truncated (max_tokens reached) — article too long for token limit');
+  }
 
   const parsed = extractJSON(content);
   if (!parsed.title || !parsed.body) {
@@ -359,12 +365,17 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
       },
     ],
     temperature: 0.3,
-    max_tokens: 2000,
+    max_tokens: 4096,
     response_format: { type: 'json_object' },
   });
 
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error(`Empty translation response (${langName})`);
+
+  const finishReason = response.choices[0]?.finish_reason;
+  if (finishReason === 'length') {
+    throw new Error(`Translation truncated (${langName}) — max_tokens reached`);
+  }
 
   const parsed = extractJSON(content);
   if (!parsed.title || !parsed.body) {
@@ -693,7 +704,18 @@ async function main() {
     }
 
     console.log(`Generating article in English (attempt ${attempt}/${MAX_GENERATE_ATTEMPTS})...`);
-    const candidate = await generateArticle(remainingItems);
+
+    let candidate;
+    try {
+      candidate = await generateArticle(remainingItems);
+    } catch (err) {
+      console.warn(`  Article generation failed: ${err.message}`);
+      if (attempt < MAX_GENERATE_ATTEMPTS) {
+        console.log('  Retrying...');
+        continue;
+      }
+      throw err;
+    }
 
     if (!isDuplicate(candidate.title, allArticles, candidate.source_url)) {
       article = candidate;
