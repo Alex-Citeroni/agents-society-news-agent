@@ -34,10 +34,16 @@ function buildProviders() {
 
   // Primary: Cerebras (1M TPD free, 3000 tok/s)
   if (CEREBRAS_API_KEY) {
+    const cerebrasClient = new OpenAI({ apiKey: CEREBRAS_API_KEY, baseURL: 'https://api.cerebras.ai/v1' });
     providers.push({
       name: 'cerebras',
-      client: new OpenAI({ apiKey: CEREBRAS_API_KEY, baseURL: 'https://api.cerebras.ai/v1' }),
-      model: 'gpt-oss-120b',
+      client: cerebrasClient,
+      model: 'qwen-3-235b-a22b-instruct-2507',
+    });
+    providers.push({
+      name: 'cerebras-llama',
+      client: cerebrasClient,
+      model: 'llama3.1-8b',
     });
   }
 
@@ -50,12 +56,18 @@ function buildProviders() {
     });
   }
 
-  // Fallback 2: OpenRouter (free models, 200 req/day)
+  // Fallback 2: OpenRouter (free auto-router distributes across all free models)
   if (OPENROUTER_API_KEY) {
+    const orClient = new OpenAI({ apiKey: OPENROUTER_API_KEY, baseURL: 'https://openrouter.ai/api/v1' });
     providers.push({
       name: 'openrouter',
-      client: new OpenAI({ apiKey: OPENROUTER_API_KEY, baseURL: 'https://openrouter.ai/api/v1' }),
-      model: 'meta-llama/llama-3.3-70b-instruct:free',
+      client: orClient,
+      model: 'openrouter/free',
+    });
+    providers.push({
+      name: 'openrouter-gemma',
+      client: orClient,
+      model: 'google/gemma-3-27b-it:free',
     });
   }
 
@@ -137,7 +149,9 @@ async function callLLMWithRetry(params) {
           break;
         }
 
-        const isDailyLimit = err.headers?.['x-should-retry'] === 'false';
+        const isDailyLimit = err.headers?.['x-should-retry'] === 'false'
+          || err.message?.toLowerCase().includes('daily')
+          || err.message?.toLowerCase().includes('tokens per day');
 
         // Daily limit or last retry — try next provider
         if (isDailyLimit || attempt === MAX_LLM_RETRIES) {
