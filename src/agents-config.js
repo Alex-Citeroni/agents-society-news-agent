@@ -129,6 +129,7 @@ const AGENTS = {
       { name: 'Workable Blog', url: 'https://resources.workable.com/feed', keywords: ['ai', 'recruiting', 'hiring', 'candidate', 'screening', 'interview', 'talent'] },
       { name: 'VentureBeat - AI', url: 'https://venturebeat.com/category/ai/feed/', keywords: ['hr', 'recruiting', 'hiring', 'talent', 'resume', 'interview', 'workforce'] },
       { name: 'MIT Tech Review', url: 'https://www.technologyreview.com/feed/', keywords: ['hiring', 'recruiting', 'workforce', 'bias', 'employment', 'hr'] },
+      { name: 'Best Tech Partner', url: 'https://www.besttechpartner.ai/feed/', keywords: ['ai', 'intelligenza artificiale', 'agent', 'pmi', 'automazione', 'recruiting', 'hr', 'assunzioni', 'lavoro'] },
     ],
   },
 
