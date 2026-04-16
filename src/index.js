@@ -555,69 +555,116 @@ Rules:
 }
 
 /**
- * Search Unsplash for a photo matching the query
+ * Verify an image URL is reachable and returns an actual image.
+ * Uses HEAD request to avoid downloading the whole body.
+ */
+async function verifyImageUrl(url) {
+  try {
+    const res = await fetchWithTimeout(url, { method: 'HEAD' }, 8000);
+    if (!res.ok) return false;
+    const contentType = res.headers.get('content-type') || '';
+    return contentType.startsWith('image/');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Search Unsplash for a photo matching the query.
+ * Returns a candidate list (not a single URL) so the caller can try multiple
+ * images and skip any that fail validation.
  */
 async function searchUnsplash(query) {
-  if (!UNSPLASH_ACCESS_KEY) return null;
+  if (!UNSPLASH_ACCESS_KEY) return [];
   try {
-    const url = `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=5&orientation=landscape`;
+    const url = `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=10&orientation=landscape`;
     const res = await fetchWithTimeout(url, {
       headers: { Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}` },
     });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.results && data.results.length > 0) {
-        const photo = data.results[Math.floor(Math.random() * Math.min(data.results.length, 5))];
-        const imageUrl = photo.urls?.regular || photo.urls?.small;
-        if (imageUrl) {
-          console.log(`  Image found: Unsplash "${query}" (by ${photo.user?.name || 'unknown'})`);
-          return imageUrl;
-        }
-      }
+    if (!res.ok) {
+      console.warn(`  Unsplash HTTP ${res.status} for "${query}"`);
+      return [];
     }
+    const data = await res.json();
+    const results = data.results || [];
+    // Shuffle for variety across agents/runs
+    const shuffled = [...results].sort(() => Math.random() - 0.5);
+    return shuffled
+      .map((photo) => ({
+        url: photo.urls?.regular || photo.urls?.small,
+        source: 'Unsplash',
+        query,
+        author: photo.user?.name || 'unknown',
+      }))
+      .filter((c) => c.url);
   } catch (err) {
     console.warn(`  Unsplash error for "${query}": ${err.message}`);
+    return [];
   }
-  return null;
 }
 
 /**
- * Search Pixabay for a photo matching the query
+ * Search Pixabay for a photo matching the query.
+ * Returns a candidate list. Prefers `largeImageURL` (1280px, unwatermarked)
+ * over `webformatURL` (640px, may be watermarked).
  */
 async function searchPixabay(query) {
   const PIXABAY_KEY = process.env.PIXABAY_API_KEY || '';
-  if (!PIXABAY_KEY) return null;
+  if (!PIXABAY_KEY) return [];
   try {
-    const url = `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent(query)}&image_type=photo&orientation=horizontal&per_page=5`;
+    const url = `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent(query)}&image_type=photo&orientation=horizontal&per_page=10&safesearch=true`;
     const res = await fetchWithTimeout(url);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.hits && data.hits.length > 0) {
-        const hit = data.hits[Math.floor(Math.random() * Math.min(data.hits.length, 5))];
-        console.log(`  Image found: Pixabay "${query}"`);
-        return hit.webformatURL || hit.largeImageURL;
-      }
+    if (!res.ok) {
+      console.warn(`  Pixabay HTTP ${res.status} for "${query}"`);
+      return [];
     }
+    const data = await res.json();
+    const hits = data.hits || [];
+    const shuffled = [...hits].sort(() => Math.random() - 0.5);
+    return shuffled
+      .map((hit) => ({
+        url: hit.largeImageURL || hit.webformatURL,
+        source: 'Pixabay',
+        query,
+        author: hit.user || 'unknown',
+      }))
+      .filter((c) => c.url);
   } catch (err) {
     console.warn(`  Pixabay error for "${query}": ${err.message}`);
+    return [];
   }
-  return null;
 }
 
 /**
- * Search for a relevant featured image with LLM-powered keywords and retry strategy
+ * Search for a relevant featured image. For each query, gather candidates from
+ * both providers and return the first one whose URL actually resolves to an
+ * image. This prevents publishing articles with broken image URLs.
  */
 async function findFeaturedImage(title, body) {
   const queries = await generateImageKeywords(title, body);
   console.log(`  Image search queries: ${JSON.stringify(queries)}`);
 
-  // Try each query on Unsplash first, then Pixabay
   for (const query of queries) {
-    const unsplashResult = await searchUnsplash(query);
-    if (unsplashResult) return unsplashResult;
+    const [unsplashCandidates, pixabayCandidates] = await Promise.all([
+      searchUnsplash(query),
+      searchPixabay(query),
+    ]);
+    // Interleave providers so we don't exhaust one before trying the other
+    const candidates = [];
+    const max = Math.max(unsplashCandidates.length, pixabayCandidates.length);
+    for (let i = 0; i < max; i++) {
+      if (unsplashCandidates[i]) candidates.push(unsplashCandidates[i]);
+      if (pixabayCandidates[i]) candidates.push(pixabayCandidates[i]);
+    }
 
-    const pixabayResult = await searchPixabay(query);
-    if (pixabayResult) return pixabayResult;
+    for (const candidate of candidates) {
+      const ok = await verifyImageUrl(candidate.url);
+      if (ok) {
+        console.log(`  Image found: ${candidate.source} "${candidate.query}" (by ${candidate.author})`);
+        return candidate.url;
+      }
+      console.warn(`  Skipping unreachable image from ${candidate.source}: ${candidate.url}`);
+    }
   }
 
   console.warn('  No featured image found after all attempts');
