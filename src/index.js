@@ -414,22 +414,42 @@ async function publishArticle(article, translations) {
     translations,
   };
 
-  const res = await fetchWithTimeout(`${API_BASE}/api/v1/agents/article`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${AGENT_API_KEY}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  const MAX_PUBLISH_ATTEMPTS = 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_PUBLISH_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/v1/agents/article`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${AGENT_API_KEY}`,
+        },
+        body: JSON.stringify(payload),
+      }, 60_000);
 
-  const data = await res.json();
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(`Non-JSON response (${res.status}): ${text.slice(0, 200)}`);
+      }
 
-  if (!data.success) {
-    throw new Error(`Failed to publish: ${data.error}`);
+      if (!data.success) {
+        throw new Error(`Failed to publish: ${data.error || res.status}`);
+      }
+
+      return data.data;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_PUBLISH_ATTEMPTS) {
+        const waitMs = 2000 * attempt;
+        console.warn(`  publish: attempt ${attempt} failed (${err.message}), retrying in ${waitMs}ms...`);
+        await new Promise((r) => setTimeout(r, waitMs));
+      }
+    }
   }
-
-  return data.data;
+  throw lastErr;
 }
 
 /**
