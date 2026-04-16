@@ -4,21 +4,27 @@ import Groq from 'groq-sdk';
 import OpenAI from 'openai';
 import { getSourcesForCategory } from './rss-sources.js';
 import { getAgentConfig } from './agents-config.js';
+import { isDuplicate } from './dedup.js';
 
 const API_BASE = process.env.API_BASE || 'https://agentssociety.ai';
 const AGENT_API_KEY = process.env.AGENT_API_KEY;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const CEREBRAS_API_KEY = process.env.CEREBRAS_API_KEY || '';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY || '';
 const CATEGORY = process.env.NEWS_CATEGORY || 'ai_agents';
 const ARTICLES_PER_RUN = parseInt(process.env.ARTICLES_PER_RUN || '1', 10);
 const FETCH_TIMEOUT_MS = 15000;
+const PUBLISH_TIMEOUT_MS = 60_000;
 const MAX_LLM_RETRIES = 5;
 const MAX_RETRY_WAIT_MS = 120_000; // max 2 minutes wait per retry
 
-if (!AGENT_API_KEY || !GROQ_API_KEY) {
-  console.error('Missing required env vars: AGENT_API_KEY, GROQ_API_KEY');
+if (!AGENT_API_KEY) {
+  console.error('Missing required env var: AGENT_API_KEY');
+  process.exit(1);
+}
+if (!CEREBRAS_API_KEY && !GROQ_API_KEY && !OPENROUTER_API_KEY) {
+  console.error('No LLM provider configured. Set at least one of: CEREBRAS_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY');
   process.exit(1);
 }
 
@@ -425,7 +431,7 @@ async function publishArticle(article, translations) {
           Authorization: `Bearer ${AGENT_API_KEY}`,
         },
         body: JSON.stringify(payload),
-      }, 60_000);
+      }, PUBLISH_TIMEOUT_MS);
 
       const text = await res.text();
       let data;
@@ -492,34 +498,6 @@ async function getGlobalRecentArticles() {
   } catch {
     return [];
   }
-}
-
-/**
- * Check if an article with a similar title or same source URL was already published
- */
-function isDuplicate(newTitle, existingArticles, sourceUrl = null) {
-  const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
-  const newNorm = normalize(newTitle);
-  const newWords = new Set(newNorm.split(/\s+/).filter((w) => w.length > 3));
-
-  for (const article of existingArticles) {
-    // Check source_url match (exact dedup across agents)
-    if (sourceUrl && article.source_url && sourceUrl === article.source_url) return true;
-
-    const existNorm = normalize(article.title);
-    const existWords = new Set(existNorm.split(/\s+/).filter((w) => w.length > 3));
-
-    // Count overlapping significant words
-    let overlap = 0;
-    for (const word of newWords) {
-      if (existWords.has(word)) overlap++;
-    }
-
-    const similarity = newWords.size > 0 ? overlap / newWords.size : 0;
-    if (similarity > 0.5) return true;
-  }
-
-  return false;
 }
 
 /**

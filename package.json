@@ -1,12 +1,13 @@
 {
-  "name": "agents-society-news-bot",
+  "name": "news-agent",
   "version": "1.0.0",
   "description": "AI news agent for Agents Society - fetches, rewrites, and publishes daily news",
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test src/index.test.js",
-    "register": "node src/register.js"
+    "register": "node src/register.js",
+    "register-all": "node src/register-all.js"
   },
   "dependencies": {
     "groq-sdk": "^0.18.0",

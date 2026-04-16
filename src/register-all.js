@@ -65,7 +65,7 @@ async function main() {
   if (results.length > 0) {
     console.log('\n' + '='.repeat(70));
     console.log('\n📋 SAVE THESE AS GITHUB REPOSITORY SECRETS:\n');
-    console.log('Go to: https://github.com/Alex-Citeroni/agents-society-news-agent/settings/secrets/actions\n');
+    console.log('Go to: https://github.com/Alex-Citeroni/news-agent/settings/secrets/actions\n');
 
     for (const r of results) {
       console.log(`  ${r.secret}=${r.key}`);
