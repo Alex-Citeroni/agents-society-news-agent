@@ -10,8 +10,10 @@
     "register-all": "node src/register-all.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.103.3",
     "groq-sdk": "^0.18.0",
     "openai": "^6.33.0",
-    "rss-parser": "^3.13.0"
+    "rss-parser": "^3.13.0",
+    "sharp": "^0.34.5"
   }
 }

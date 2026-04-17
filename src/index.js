@@ -2,6 +2,8 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import Parser from 'rss-parser';
 import Groq from 'groq-sdk';
 import OpenAI from 'openai';
+import sharp from 'sharp';
+import { createClient } from '@supabase/supabase-js';
 import { getSourcesForCategory } from './rss-sources.js';
 import { getAgentConfig } from './agents-config.js';
 import { isDuplicate } from './dedup.js';
@@ -12,6 +14,13 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const CEREBRAS_API_KEY = process.env.CEREBRAS_API_KEY || '';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY || '';
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'news-images';
+
+const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
+  : null;
 const CATEGORY = process.env.NEWS_CATEGORY || 'ai_agents';
 const ARTICLES_PER_RUN = parseInt(process.env.ARTICLES_PER_RUN || '1', 10);
 const FETCH_TIMEOUT_MS = 15000;
@@ -501,7 +510,8 @@ async function getGlobalRecentArticles() {
 }
 
 /**
- * Use LLM to generate descriptive image search keywords from the article
+ * Use LLM to generate descriptive image search keywords + a short headline
+ * for the image overlay. Returns { queries: string[], headline: string }.
  */
 async function generateImageKeywords(title, body) {
   try {
@@ -509,20 +519,27 @@ async function generateImageKeywords(title, body) {
       messages: [
         {
           role: 'system',
-          content: `You generate image search keywords for stock photo searches. Given an article title and body, return 3 different search queries that would find visually relevant, distinct photos.
+          content: `You generate image search keywords for stock photo searches AND a short headline to overlay on the image. Given an article title and body, return 3 different search queries plus a punchy headline.
 
 Return ONLY valid JSON:
 {
-  "queries": ["descriptive visual query 1", "descriptive visual query 2", "broader fallback query"]
+  "queries": ["descriptive visual query 1", "descriptive visual query 2", "broader fallback query"],
+  "headline": "short punchy phrase"
 }
 
-Rules:
+Query rules:
 - Each query should be 2-4 words, describing a VISUAL scene (not abstract concepts)
 - Query 1: specific to the article topic (e.g. "robot arm assembly line", "developer coding laptop")
 - Query 2: related but different angle (e.g. "circuit board closeup", "team brainstorming office")
 - Query 3: broad fallback (e.g. "artificial intelligence technology", "digital innovation")
 - Focus on things a camera can photograph, not abstract ideas
-- Do NOT use brand names or person names`,
+- Do NOT use brand names or person names
+
+Headline rules:
+- 4 to 8 words, max 60 characters total
+- Attention-grabbing, captures the main hook of the article
+- Plain text, no quotes, no emojis, no trailing punctuation
+- Written in the same language as the article title`,
         },
         {
           role: 'user',
@@ -530,7 +547,7 @@ Rules:
         },
       ],
       temperature: 0.5,
-      max_tokens: 200,
+      max_tokens: 250,
       response_format: { type: 'json_object' },
     });
 
@@ -538,7 +555,10 @@ Rules:
     if (content) {
       const parsed = extractJSON(content);
       if (parsed.queries && parsed.queries.length > 0) {
-        return parsed.queries;
+        return {
+          queries: parsed.queries,
+          headline: typeof parsed.headline === 'string' ? parsed.headline.trim() : '',
+        };
       }
     }
   } catch (err) {
@@ -547,11 +567,14 @@ Rules:
 
   // Fallback: extract from title
   const words = title.replace(/[^a-zA-Z0-9 ]/g, '').split(/\s+/).filter(w => w.length > 3);
-  return [
-    words.slice(0, 3).join(' ') + ' technology',
-    words.slice(0, 2).join(' '),
-    'artificial intelligence technology',
-  ];
+  return {
+    queries: [
+      words.slice(0, 3).join(' ') + ' technology',
+      words.slice(0, 2).join(' '),
+      'artificial intelligence technology',
+    ],
+    headline: title.length > 80 ? title.slice(0, 77).trimEnd() + '…' : title,
+  };
 }
 
 /**
@@ -636,13 +659,158 @@ async function searchPixabay(query) {
 }
 
 /**
+ * Escape a string for safe inclusion in an SVG text node.
+ */
+function escapeXml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * Greedy word-wrap into up to `maxLines` lines of roughly `maxCharsPerLine` chars.
+ */
+function wrapHeadline(text, maxCharsPerLine, maxLines) {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = '';
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length > maxCharsPerLine && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+    if (lines.length >= maxLines) break;
+  }
+  if (current && lines.length < maxLines) lines.push(current);
+  if (lines.length === maxLines && words.join(' ').length > lines.join(' ').length) {
+    lines[lines.length - 1] = lines[lines.length - 1].replace(/[.,;:!?]+$/, '') + '…';
+  }
+  return lines;
+}
+
+/**
+ * Download an image, composite a headline over a dark gradient, and return a
+ * JPEG buffer sized 1200x630 (OG standard).
+ */
+async function overlayHeadlineOnImage(imageUrl, headline) {
+  const res = await fetchWithTimeout(imageUrl, {}, 15000);
+  if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+  const sourceBuffer = Buffer.from(await res.arrayBuffer());
+
+  const WIDTH = 1200;
+  const HEIGHT = 630;
+  const lines = wrapHeadline(headline.toUpperCase(), 26, 3);
+  const fontSize = lines.length >= 3 ? 58 : 64;
+  const lineHeight = Math.round(fontSize * 1.12);
+  const leftPadding = 64;
+  const bottomPadding = 72;
+  const textTop = HEIGHT - bottomPadding - (lines.length - 1) * lineHeight;
+
+  const tspans = lines
+    .map((line, i) => {
+      const y = textTop + i * lineHeight;
+      return `<text x="${leftPadding}" y="${y}" class="hl">${escapeXml(line)}</text>`;
+    })
+    .join('');
+
+  const accentY = textTop - fontSize - 18;
+  const svg = `<svg width="${WIDTH}" height="${HEIGHT}" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#000" stop-opacity="0"/>
+      <stop offset="45%" stop-color="#000" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#000" stop-opacity="0.92"/>
+    </linearGradient>
+    <style>
+      .hl {
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        font-size: ${fontSize}px;
+        font-weight: 900;
+        fill: #ffffff;
+        letter-spacing: -0.5px;
+        paint-order: stroke;
+        stroke: rgba(0,0,0,0.35);
+        stroke-width: 2px;
+      }
+    </style>
+  </defs>
+  <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="url(#g)"/>
+  <rect x="${leftPadding}" y="${accentY}" width="56" height="6" fill="#ffffff" opacity="0.9"/>
+  ${tspans}
+</svg>`;
+
+  return await sharp(sourceBuffer)
+    .resize(WIDTH, HEIGHT, { fit: 'cover', position: 'attention' })
+    .composite([{ input: Buffer.from(svg) }])
+    .jpeg({ quality: 88, mozjpeg: true })
+    .toBuffer();
+}
+
+/**
+ * Upload a JPEG buffer to Supabase Storage. The original stock-photo URL is
+ * attached as object metadata so a future cleanup job can rollback the
+ * article's featured_image_url before deleting the branded file.
+ * Assumes the bucket is configured as public.
+ */
+async function uploadToSupabase(imageBuffer, sourceUrl) {
+  if (!supabase) throw new Error('Supabase not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)');
+  const random = Math.random().toString(36).slice(2, 10);
+  const path = `${CATEGORY}/${Date.now()}-${random}.jpg`;
+  const { error } = await supabase.storage
+    .from(SUPABASE_STORAGE_BUCKET)
+    .upload(path, imageBuffer, {
+      contentType: 'image/jpeg',
+      cacheControl: '31536000',
+      upsert: false,
+      metadata: { source_url: sourceUrl, category: CATEGORY },
+    });
+  if (error) throw new Error(`Supabase upload failed: ${error.message}`);
+  const { data } = supabase.storage.from(SUPABASE_STORAGE_BUCKET).getPublicUrl(path);
+  return data.publicUrl;
+}
+
+/**
+ * Compose the headline on top of the sourced image and upload the result.
+ * Returns the hosted URL, or null on any failure so the caller can fall back
+ * to the original image.
+ */
+async function brandImage(sourceUrl, headline) {
+  if (!supabase) {
+    console.log('  Skipping image branding (Supabase not configured)');
+    return null;
+  }
+  if (!headline) {
+    console.log('  Skipping image branding (no headline generated)');
+    return null;
+  }
+  try {
+    const buffer = await overlayHeadlineOnImage(sourceUrl, headline);
+    const url = await uploadToSupabase(buffer, sourceUrl);
+    console.log(`  Branded image uploaded: ${url}`);
+    return url;
+  } catch (err) {
+    console.warn(`  Image branding failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Search for a relevant featured image. For each query, gather candidates from
  * both providers and return the first one whose URL actually resolves to an
  * image. This prevents publishing articles with broken image URLs.
+ * If IMGBB_API_KEY is set, composes the generated headline on top of the
+ * chosen image and returns the hosted branded URL.
  */
 async function findFeaturedImage(title, body) {
-  const queries = await generateImageKeywords(title, body);
+  const { queries, headline } = await generateImageKeywords(title, body);
   console.log(`  Image search queries: ${JSON.stringify(queries)}`);
+  if (headline) console.log(`  Image headline: "${headline}"`);
 
   for (const query of queries) {
     const [unsplashCandidates, pixabayCandidates] = await Promise.all([
@@ -659,11 +827,13 @@ async function findFeaturedImage(title, body) {
 
     for (const candidate of candidates) {
       const ok = await verifyImageUrl(candidate.url);
-      if (ok) {
-        console.log(`  Image found: ${candidate.source} "${candidate.query}" (by ${candidate.author})`);
-        return candidate.url;
+      if (!ok) {
+        console.warn(`  Skipping unreachable image from ${candidate.source}: ${candidate.url}`);
+        continue;
       }
-      console.warn(`  Skipping unreachable image from ${candidate.source}: ${candidate.url}`);
+      console.log(`  Image found: ${candidate.source} "${candidate.query}" (by ${candidate.author})`);
+      const branded = await brandImage(candidate.url, headline);
+      return branded || candidate.url;
     }
   }
 

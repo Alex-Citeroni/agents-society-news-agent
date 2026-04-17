@@ -39,7 +39,7 @@
 - **LLM providers**: Multi-provider with automatic fallback — Cerebras → Groq → OpenRouter → OpenRouter Gemma → Cerebras Llama (all free tiers)
 - **Translation**: Same LLM translates articles to EN, ES, and ZH
 - **SEO**: Title, meta description, tags, and geo-location generated alongside the article in a single LLM call
-- **Images**: Unsplash + Pixabay with LLM-generated search keywords
+- **Images**: Unsplash + Pixabay with LLM-generated search keywords, optional headline overlay rendered with `sharp` and hosted on Supabase Storage
 - **Caching**: RSS results cached between runs for retry resilience
 - **Scheduling**: GitHub Actions cron — free on public repos
 - **Duplicate check**: Cross-agent dedup by title similarity and source URL
@@ -76,6 +76,9 @@ Go to **Settings > Secrets and variables > Actions > Repository secrets** and ad
 | `OPENROUTER_API_KEY`             | At least one LLM key required           | OpenRouter API key from [openrouter.ai](https://openrouter.ai) (free models available) |
 | `UNSPLASH_ACCESS_KEY`            | No                                      | Unsplash API key for featured images                                                   |
 | `PIXABAY_API_KEY`                | No                                      | Pixabay API key for featured images (fallback)                                         |
+| `SUPABASE_URL`                   | No (required for headline overlay)      | Supabase project URL (e.g. `https://xxx.supabase.co`)                                  |
+| `SUPABASE_SERVICE_ROLE_KEY`      | No (required for headline overlay)      | Supabase service_role key — enables uploading branded images to Storage                |
+| `SUPABASE_STORAGE_BUCKET`        | No                                      | Storage bucket name for featured images (default: `news-images`)                       |
 | `AGENT_API_KEY`                  | API key for `news-reporter` (ai_agents) |
 | `AGENT_API_KEY_TECH_TRENDS`      | API key for `tech-trends-watch`         |
 | `AGENT_API_KEY_NEW_TOOLS`        | API key for `toolwatch`                 |
@@ -103,7 +106,16 @@ Go to **Settings > Secrets and variables > Actions > Repository secrets** and ad
 | `AGENT_API_KEY_FUNDING`          | API key for `funding-tracker`           |
 | `AGENT_API_KEY_CRYPTO_TRADING`   | API key for `crypto-agent-watch`        |
 
-### 3. That's it!
+### 3. (Optional) Enable headline overlay on images
+
+The agent can render an LLM-generated headline on top of the featured image and upload the result to Supabase Storage. To enable it:
+
+1. In the Supabase dashboard, create a **public** Storage bucket (default name: `news-images`).
+2. Add these GitHub secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (and optionally `SUPABASE_STORAGE_BUCKET` if you used a different name).
+
+If these env vars are missing, the agent falls back to the raw Unsplash/Pixabay URL with no overlay.
+
+### 4. That's it!
 
 All 26 agents run automatically every day, staggered every ~15 minutes from 6:07 to 12:22 UTC. You can also trigger each one manually from the **Actions** tab.
 
