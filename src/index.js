@@ -694,23 +694,128 @@ function wrapHeadline(text, maxCharsPerLine, maxLines) {
   return lines;
 }
 
-/**
- * Download an image, composite a headline over a dark gradient, and return a
- * JPEG buffer sized 1200x630 (OG standard).
- */
-async function overlayHeadlineOnImage(imageUrl, headline) {
-  const res = await fetchWithTimeout(imageUrl, {}, 15000);
-  if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-  const sourceBuffer = Buffer.from(await res.arrayBuffer());
+/** Accent colour palettes shared across related categories. */
+const PALETTE_FAMILIES = {
+  tech:     { accent: '#3B82F6' }, // blue
+  money:    { accent: '#FBBF24' }, // gold
+  growth:   { accent: '#10B981' }, // emerald
+  creative: { accent: '#EC4899' }, // pink
+  human:    { accent: '#FB923C' }, // peach
+  security: { accent: '#DC2626' }, // red
+  ai:       { accent: '#A855F7' }, // purple
+  strategy: { accent: '#F59E0B' }, // amber
+};
 
-  const WIDTH = 1200;
-  const HEIGHT = 630;
+/** Map each agent category to a palette family. */
+const CATEGORY_TO_PALETTE = {
+  tech_trends:      'tech',
+  new_tools:        'tech',
+  workflows:        'tech',
+  automation:       'tech',
+  use_cases:        'tech',
+  playbooks:        'tech',
+  agent_builders:   'tech',
+  finance:          'money',
+  funding:          'money',
+  revops:           'money',
+  sales:            'money',
+  growth:           'growth',
+  digital_labor:    'growth',
+  marketing:        'creative',
+  lead_generation:  'creative',
+  hr_recruiting:    'human',
+  ai_humans:        'human',
+  future_of_work:   'human',
+  customer_support: 'human',
+  it_security:      'security',
+  challenges:       'security',
+  ai_agents:        'ai',
+  agent_economy:    'ai',
+  crypto_trading:   'ai',
+  strategy:         'strategy',
+  operations:       'strategy',
+};
+
+function getPaletteForCategory(category) {
+  const family = CATEGORY_TO_PALETTE[category] || 'tech';
+  return { ...PALETTE_FAMILIES[family], family };
+}
+
+/**
+ * Decide whether the headline should sit in the top or bottom half of the
+ * image. Prefers the darker, more uniform half so the white text always has
+ * good contrast and nothing visually important is covered.
+ */
+async function analyzeImageLayout(imageBuffer) {
+  // Downsample so analysis is fast (~10ms). Keep aspect ratio.
+  const { data, info } = await sharp(imageBuffer)
+    .resize(120, 63, { fit: 'fill' })
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const W = info.width;
+  const H = info.height;
+  const halfH = Math.floor(H / 2);
+
+  const statsForRange = (yStart, yEnd) => {
+    let sum = 0, sumSq = 0, n = 0;
+    for (let y = yStart; y < yEnd; y++) {
+      const rowOffset = y * W;
+      for (let x = 0; x < W; x++) {
+        const v = data[rowOffset + x];
+        sum += v;
+        sumSq += v * v;
+        n++;
+      }
+    }
+    const mean = sum / n;
+    const variance = sumSq / n - mean * mean;
+    return { mean, stddev: Math.sqrt(Math.max(0, variance)) };
+  };
+
+  const top = statsForRange(0, halfH);
+  const bottom = statsForRange(halfH, H);
+
+  // Score: lower = better for white text. Prefer darker (low mean) and more
+  // uniform (low stddev). Bottom gets a small bias since it reads as a caption.
+  const topScore = top.mean + top.stddev * 0.5;
+  const bottomScore = bottom.mean + bottom.stddev * 0.5 - 5;
+  return bottomScore <= topScore ? 'bottom' : 'top';
+}
+
+/**
+ * Build the SVG overlay. Layout is either "bottom" (gradient at the bottom,
+ * text aligned bottom-left) or "top" (mirrored).
+ */
+function buildOverlaySvg({ headline, layout, accent, width, height }) {
   const lines = wrapHeadline(headline.toUpperCase(), 26, 3);
   const fontSize = lines.length >= 3 ? 58 : 64;
   const lineHeight = Math.round(fontSize * 1.12);
   const leftPadding = 64;
-  const bottomPadding = 72;
-  const textTop = HEIGHT - bottomPadding - (lines.length - 1) * lineHeight;
+  const edgePadding = 72;
+
+  let textTop;
+  let accentY;
+  let gradientStops;
+
+  if (layout === 'top') {
+    textTop = edgePadding + fontSize;
+    accentY = textTop - fontSize - 18;
+    gradientStops = `
+      <stop offset="0%" stop-color="#000" stop-opacity="0.92"/>
+      <stop offset="55%" stop-color="#000" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#000" stop-opacity="0"/>
+    `;
+  } else {
+    textTop = height - edgePadding - (lines.length - 1) * lineHeight;
+    accentY = textTop - fontSize - 18;
+    gradientStops = `
+      <stop offset="0%" stop-color="#000" stop-opacity="0"/>
+      <stop offset="45%" stop-color="#000" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#000" stop-opacity="0.92"/>
+    `;
+  }
 
   const tspans = lines
     .map((line, i) => {
@@ -719,14 +824,9 @@ async function overlayHeadlineOnImage(imageUrl, headline) {
     })
     .join('');
 
-  const accentY = textTop - fontSize - 18;
-  const svg = `<svg width="${WIDTH}" height="${HEIGHT}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#000" stop-opacity="0"/>
-      <stop offset="45%" stop-color="#000" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#000" stop-opacity="0.92"/>
-    </linearGradient>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">${gradientStops}</linearGradient>
     <style>
       .hl {
         font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
@@ -740,13 +840,43 @@ async function overlayHeadlineOnImage(imageUrl, headline) {
       }
     </style>
   </defs>
-  <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="url(#g)"/>
-  <rect x="${leftPadding}" y="${accentY}" width="56" height="6" fill="#ffffff" opacity="0.9"/>
+  <rect x="0" y="0" width="${width}" height="${height}" fill="url(#g)"/>
+  <rect x="${leftPadding}" y="${accentY}" width="64" height="6" fill="${accent}" opacity="0.95"/>
   ${tspans}
 </svg>`;
+}
 
-  return await sharp(sourceBuffer)
+/**
+ * Download an image, composite a headline over a dark gradient, and return a
+ * JPEG buffer sized 1200x630 (OG standard). Layout (top/bottom) is chosen
+ * based on image brightness; accent colour comes from the category palette.
+ */
+async function overlayHeadlineOnImage(imageUrl, headline) {
+  const res = await fetchWithTimeout(imageUrl, {}, 15000);
+  if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+  const sourceBuffer = Buffer.from(await res.arrayBuffer());
+
+  const WIDTH = 1200;
+  const HEIGHT = 630;
+
+  // Resize once so analysis and compositing work on the same pixels the user sees.
+  const baseBuffer = await sharp(sourceBuffer)
     .resize(WIDTH, HEIGHT, { fit: 'cover', position: 'attention' })
+    .toBuffer();
+
+  const layout = await analyzeImageLayout(baseBuffer);
+  const palette = getPaletteForCategory(CATEGORY);
+  console.log(`  Overlay layout=${layout} palette=${palette.family}`);
+
+  const svg = buildOverlaySvg({
+    headline,
+    layout,
+    accent: palette.accent,
+    width: WIDTH,
+    height: HEIGHT,
+  });
+
+  return await sharp(baseBuffer)
     .composite([{ input: Buffer.from(svg) }])
     .jpeg({ quality: 88, mozjpeg: true })
     .toBuffer();
