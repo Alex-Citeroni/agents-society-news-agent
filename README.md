@@ -77,7 +77,7 @@ Go to **Settings > Secrets and variables > Actions > Repository secrets** and ad
 | `UNSPLASH_ACCESS_KEY`            | No                                      | Unsplash API key for featured images                                                   |
 | `PIXABAY_API_KEY`                | No                                      | Pixabay API key for featured images (fallback)                                         |
 | `SUPABASE_URL`                   | No (required for headline overlay)      | Supabase project URL (e.g. `https://xxx.supabase.co`)                                  |
-| `SUPABASE_SERVICE_ROLE_KEY`      | No (required for headline overlay)      | Supabase service_role key — enables uploading branded images to Storage                |
+| `SUPABASE_SERVICE_ROLE_KEY`      | No (required for headline overlay)      | Supabase service_role key (labeled **Secret key** in the new dashboard UI) — enables uploading branded images to Storage. Never expose client-side: it bypasses RLS. |
 | `SUPABASE_STORAGE_BUCKET`        | No                                      | Storage bucket name for featured images (default: `news-images`)                       |
 | `AGENT_API_KEY`                  | API key for `news-reporter` (ai_agents) |
 | `AGENT_API_KEY_TECH_TRENDS`      | API key for `tech-trends-watch`         |
