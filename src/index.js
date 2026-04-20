@@ -741,13 +741,34 @@ function getPaletteForCategory(category) {
   return { ...PALETTE_FAMILIES[family], family };
 }
 
+/** Pick a random element from an array. */
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/** Derive a short eyebrow label from tags or fall back to the category name. */
+function deriveEyebrow(tags) {
+  if (Array.isArray(tags) && typeof tags[0] === 'string' && tags[0].trim().length > 0) {
+    return tags[0].trim().toUpperCase().slice(0, 28);
+  }
+  return CATEGORY.replace(/_/g, ' ').toUpperCase();
+}
+
+/** Wrap config per layout family — cards are narrower than edge-gradient layouts. */
+const LAYOUT_WRAP = {
+  bottom:       { maxChars: 26, maxLines: 3 },
+  top:          { maxChars: 26, maxLines: 3 },
+  'left-card':  { maxChars: 16, maxLines: 4 },
+  'right-card': { maxChars: 16, maxLines: 4 },
+};
+
 /**
- * Decide whether the headline should sit in the top or bottom half of the
- * image. Prefers the darker, more uniform half so the white text always has
- * good contrast and nothing visually important is covered.
+ * Decide where the headline should sit. Analyses 4 zones of the image and
+ * picks the layout whose zone is darkest/most uniform. 25% of the time an
+ * eligible card layout is chosen instead of top/bottom — placed opposite the
+ * image's busier half so the subject stays visible.
  */
 async function analyzeImageLayout(imageBuffer) {
-  // Downsample so analysis is fast (~10ms). Keep aspect ratio.
   const { data, info } = await sharp(imageBuffer)
     .resize(120, 63, { fit: 'fill' })
     .greyscale()
@@ -756,13 +777,14 @@ async function analyzeImageLayout(imageBuffer) {
 
   const W = info.width;
   const H = info.height;
+  const halfW = Math.floor(W / 2);
   const halfH = Math.floor(H / 2);
 
-  const statsForRange = (yStart, yEnd) => {
+  const stats = (x0, y0, x1, y1) => {
     let sum = 0, sumSq = 0, n = 0;
-    for (let y = yStart; y < yEnd; y++) {
+    for (let y = y0; y < y1; y++) {
       const rowOffset = y * W;
-      for (let x = 0; x < W; x++) {
+      for (let x = x0; x < x1; x++) {
         const v = data[rowOffset + x];
         sum += v;
         sumSq += v * v;
@@ -770,88 +792,128 @@ async function analyzeImageLayout(imageBuffer) {
       }
     }
     const mean = sum / n;
-    const variance = sumSq / n - mean * mean;
-    return { mean, stddev: Math.sqrt(Math.max(0, variance)) };
+    return { mean, stddev: Math.sqrt(Math.max(0, sumSq / n - mean * mean)) };
   };
 
-  const top = statsForRange(0, halfH);
-  const bottom = statsForRange(halfH, H);
+  const top = stats(0, 0, W, halfH);
+  const bottom = stats(0, halfH, W, H);
+  const left = stats(0, 0, halfW, H);
+  const right = stats(halfW, 0, W, H);
 
-  // Score: lower = better for white text. Prefer darker (low mean) and more
-  // uniform (low stddev). Bottom gets a small bias since it reads as a caption.
+  // 25% of the time, flip to a card layout — text goes on the QUIETER side
+  // so the busier half of the image (likely the subject) stays visible.
+  if (Math.random() < 0.25) {
+    return left.stddev > right.stddev ? 'right-card' : 'left-card';
+  }
+
+  // Otherwise top vs bottom by darkness + uniformity. Small bias toward
+  // bottom since it reads as a caption.
   const topScore = top.mean + top.stddev * 0.5;
   const bottomScore = bottom.mean + bottom.stddev * 0.5 - 5;
   return bottomScore <= topScore ? 'bottom' : 'top';
 }
 
 /**
- * Build the SVG overlay. Layout is either "bottom" (gradient at the bottom,
- * text aligned bottom-left) or "top" (mirrored).
+ * Build the SVG overlay. Handles 4 layouts (bottom / top / left-card /
+ * right-card) with an eyebrow label, accent bar, and multi-line headline.
+ * Minor randomisation on accent width, left padding, and accent gap keeps
+ * consecutive posts from looking identical.
  */
-function buildOverlaySvg({ headline, layout, accent, width, height }) {
-  const lines = wrapHeadline(headline.toUpperCase(), 26, 3);
-  const fontSize = lines.length >= 3 ? 58 : 64;
+function buildOverlaySvg({ headline, eyebrow, layout, accent, width, height }) {
+  const wrap = LAYOUT_WRAP[layout] || LAYOUT_WRAP.bottom;
+  const lines = wrapHeadline(headline.toUpperCase(), wrap.maxChars, wrap.maxLines);
+
+  const isCard = layout === 'left-card' || layout === 'right-card';
+  const fontSize = isCard
+    ? (lines.length >= 3 ? 46 : 52)
+    : (lines.length >= 3 ? 58 : 64);
   const lineHeight = Math.round(fontSize * 1.12);
-  const leftPadding = 64;
+  const accentWidth = pick([48, 64, 80]);
+  const accentHeight = 6;
+  const accentGap = pick([14, 18, 22]);
+  const eyebrowSize = isCard ? 18 : 22;
+  const eyebrowGap = 10;
+  const leftInsetJitter = pick([56, 64, 72]);
   const edgePadding = 72;
 
-  let textTop;
-  let accentY;
-  let gradientStops;
+  // Height of the whole text block from top of eyebrow glyphs to baseline of last line.
+  const blockHeight =
+    eyebrowSize + eyebrowGap + accentHeight + accentGap + fontSize + (lines.length - 1) * lineHeight;
 
-  if (layout === 'top') {
-    textTop = edgePadding + fontSize;
-    accentY = textTop - fontSize - 18;
-    gradientStops = `
-      <stop offset="0%" stop-color="#000" stop-opacity="0.92"/>
-      <stop offset="55%" stop-color="#000" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#000" stop-opacity="0"/>
+  let blockTopY;   // top of eyebrow glyphs
+  let textX;       // left x coord for all text and the accent bar
+  let panelSvg = '';
+  let gradientSvg = '';
+
+  if (layout === 'bottom') {
+    blockTopY = height - edgePadding - blockHeight;
+    textX = leftInsetJitter;
+    gradientSvg = `
+      <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#000" stop-opacity="0"/>
+        <stop offset="45%" stop-color="#000" stop-opacity="0.35"/>
+        <stop offset="100%" stop-color="#000" stop-opacity="0.92"/>
+      </linearGradient></defs>
+      <rect x="0" y="0" width="${width}" height="${height}" fill="url(#g)"/>
     `;
+  } else if (layout === 'top') {
+    blockTopY = edgePadding;
+    textX = leftInsetJitter;
+    gradientSvg = `
+      <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#000" stop-opacity="0.92"/>
+        <stop offset="55%" stop-color="#000" stop-opacity="0.35"/>
+        <stop offset="100%" stop-color="#000" stop-opacity="0"/>
+      </linearGradient></defs>
+      <rect x="0" y="0" width="${width}" height="${height}" fill="url(#g)"/>
+    `;
+  } else if (layout === 'left-card') {
+    const panelWidth = Math.round(width * 0.55);
+    panelSvg = `<rect x="0" y="0" width="${panelWidth}" height="${height}" fill="rgba(0,0,0,0.88)"/>`;
+    textX = leftInsetJitter;
+    blockTopY = Math.round((height - blockHeight) / 2);
   } else {
-    textTop = height - edgePadding - (lines.length - 1) * lineHeight;
-    accentY = textTop - fontSize - 18;
-    gradientStops = `
-      <stop offset="0%" stop-color="#000" stop-opacity="0"/>
-      <stop offset="45%" stop-color="#000" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#000" stop-opacity="0.92"/>
-    `;
+    // right-card
+    const panelWidth = Math.round(width * 0.55);
+    const panelX = width - panelWidth;
+    panelSvg = `<rect x="${panelX}" y="0" width="${panelWidth}" height="${height}" fill="rgba(0,0,0,0.88)"/>`;
+    textX = panelX + leftInsetJitter;
+    blockTopY = Math.round((height - blockHeight) / 2);
   }
 
+  const eyebrowY = blockTopY + eyebrowSize;
+  const accentY = eyebrowY + eyebrowGap;
+  const firstTextY = accentY + accentHeight + accentGap + fontSize;
+
+  const eyebrowSvg = eyebrow
+    ? `<text x="${textX}" y="${eyebrowY}" class="eb">${escapeXml(eyebrow)}</text>`
+    : '';
+
   const tspans = lines
-    .map((line, i) => {
-      const y = textTop + i * lineHeight;
-      return `<text x="${leftPadding}" y="${y}" class="hl">${escapeXml(line)}</text>`;
-    })
+    .map((line, i) => `<text x="${textX}" y="${firstTextY + i * lineHeight}" class="hl">${escapeXml(line)}</text>`)
     .join('');
 
   return `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">${gradientStops}</linearGradient>
-    <style>
-      .hl {
-        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        font-size: ${fontSize}px;
-        font-weight: 900;
-        fill: #ffffff;
-        letter-spacing: -0.5px;
-        paint-order: stroke;
-        stroke: rgba(0,0,0,0.35);
-        stroke-width: 2px;
-      }
-    </style>
-  </defs>
-  <rect x="0" y="0" width="${width}" height="${height}" fill="url(#g)"/>
-  <rect x="${leftPadding}" y="${accentY}" width="64" height="6" fill="${accent}" opacity="0.95"/>
+  <style>
+    .hl { font-family:'Helvetica Neue',Helvetica,Arial,sans-serif; font-size:${fontSize}px; font-weight:900; fill:#ffffff; letter-spacing:-0.5px; paint-order:stroke; stroke:rgba(0,0,0,0.35); stroke-width:2px; }
+    .eb { font-family:'Helvetica Neue',Helvetica,Arial,sans-serif; font-size:${eyebrowSize}px; font-weight:700; fill:${accent}; letter-spacing:2.5px; }
+  </style>
+  ${gradientSvg}
+  ${panelSvg}
+  ${eyebrowSvg}
+  <rect x="${textX}" y="${accentY}" width="${accentWidth}" height="${accentHeight}" fill="${accent}" opacity="0.95"/>
   ${tspans}
 </svg>`;
 }
 
 /**
- * Download an image, composite a headline over a dark gradient, and return a
- * JPEG buffer sized 1200x630 (OG standard). Layout (top/bottom) is chosen
- * based on image brightness; accent colour comes from the category palette.
+ * Download an image and composite a headline + eyebrow + accent bar on top.
+ * Layout (bottom/top/left-card/right-card) is chosen based on the image,
+ * accent colour comes from the category palette, and a few pixel values are
+ * jittered so consecutive posts in the same category don't look identical.
+ * Returns a JPEG buffer sized 1200x630 (OG standard).
  */
-async function overlayHeadlineOnImage(imageUrl, headline) {
+async function overlayHeadlineOnImage(imageUrl, headline, eyebrow) {
   const res = await fetchWithTimeout(imageUrl, {}, 15000);
   if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
   const sourceBuffer = Buffer.from(await res.arrayBuffer());
@@ -866,10 +928,11 @@ async function overlayHeadlineOnImage(imageUrl, headline) {
 
   const layout = await analyzeImageLayout(baseBuffer);
   const palette = getPaletteForCategory(CATEGORY);
-  console.log(`  Overlay layout=${layout} palette=${palette.family}`);
+  console.log(`  Overlay layout=${layout} palette=${palette.family} eyebrow="${eyebrow}"`);
 
   const svg = buildOverlaySvg({
     headline,
+    eyebrow,
     layout,
     accent: palette.accent,
     width: WIDTH,
@@ -910,7 +973,7 @@ async function uploadToSupabase(imageBuffer, sourceUrl) {
  * Returns the hosted URL, or null on any failure so the caller can fall back
  * to the original image.
  */
-async function brandImage(sourceUrl, headline) {
+async function brandImage(sourceUrl, headline, tags) {
   if (!supabase) {
     console.log('  Skipping image branding (Supabase not configured)');
     return null;
@@ -920,7 +983,8 @@ async function brandImage(sourceUrl, headline) {
     return null;
   }
   try {
-    const buffer = await overlayHeadlineOnImage(sourceUrl, headline);
+    const eyebrow = deriveEyebrow(tags);
+    const buffer = await overlayHeadlineOnImage(sourceUrl, headline, eyebrow);
     const url = await uploadToSupabase(buffer, sourceUrl);
     console.log(`  Branded image uploaded: ${url}`);
     return url;
@@ -934,10 +998,10 @@ async function brandImage(sourceUrl, headline) {
  * Search for a relevant featured image. For each query, gather candidates from
  * both providers and return the first one whose URL actually resolves to an
  * image. This prevents publishing articles with broken image URLs.
- * If IMGBB_API_KEY is set, composes the generated headline on top of the
- * chosen image and returns the hosted branded URL.
+ * If Supabase is configured, composes the generated headline + eyebrow on top
+ * of the chosen image and returns the hosted branded URL.
  */
-async function findFeaturedImage(title, body) {
+async function findFeaturedImage(title, body, tags) {
   const { queries, headline } = await generateImageKeywords(title, body);
   console.log(`  Image search queries: ${JSON.stringify(queries)}`);
   if (headline) console.log(`  Image headline: "${headline}"`);
@@ -962,7 +1026,7 @@ async function findFeaturedImage(title, body) {
         continue;
       }
       console.log(`  Image found: ${candidate.source} "${candidate.query}" (by ${candidate.author})`);
-      const branded = await brandImage(candidate.url, headline);
+      const branded = await brandImage(candidate.url, headline, tags);
       return branded || candidate.url;
     }
   }
@@ -1096,7 +1160,7 @@ async function main() {
   ];
 
   const [imageResult, ...translationResults] = await Promise.allSettled([
-    findFeaturedImage(article.title, article.body),
+    findFeaturedImage(article.title, article.body, article.tags),
     ...langs.map(({ name }) => translateArticle(article, name)),
   ]);
 
