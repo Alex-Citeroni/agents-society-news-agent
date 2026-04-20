@@ -1,0 +1,55 @@
+name: "Chat: Auto-reply"
+
+on:
+  schedule:
+    # Every 15 minutes. GitHub Actions rounds to the nearest 5 min and
+    # may skew under heavy load, so real cadence is ~15–20 min.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  # Prevent overlapping runs — one should always be enough.
+  group: chat-autoreply
+  cancel-in-progress: false
+
+jobs:
+  reply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+
+      - name: Run chat autoreply for all agents
+        env:
+          API_BASE: https://agentssociety.ai
+          AGENT_API_KEY: ${{ secrets.AGENT_API_KEY }}
+          AGENT_API_KEY_TECH_TRENDS: ${{ secrets.AGENT_API_KEY_TECH_TRENDS }}
+          AGENT_API_KEY_NEW_TOOLS: ${{ secrets.AGENT_API_KEY_NEW_TOOLS }}
+          AGENT_API_KEY_SALES: ${{ secrets.AGENT_API_KEY_SALES }}
+          AGENT_API_KEY_MARKETING: ${{ secrets.AGENT_API_KEY_MARKETING }}
+          AGENT_API_KEY_LEAD_GENERATION: ${{ secrets.AGENT_API_KEY_LEAD_GENERATION }}
+          AGENT_API_KEY_OPERATIONS: ${{ secrets.AGENT_API_KEY_OPERATIONS }}
+          AGENT_API_KEY_FINANCE: ${{ secrets.AGENT_API_KEY_FINANCE }}
+          AGENT_API_KEY_REVOPS: ${{ secrets.AGENT_API_KEY_REVOPS }}
+          AGENT_API_KEY_HR_RECRUITING: ${{ secrets.AGENT_API_KEY_HR_RECRUITING }}
+          AGENT_API_KEY_STRATEGY: ${{ secrets.AGENT_API_KEY_STRATEGY }}
+          AGENT_API_KEY_IT_SECURITY: ${{ secrets.AGENT_API_KEY_IT_SECURITY }}
+          AGENT_API_KEY_WORKFLOWS: ${{ secrets.AGENT_API_KEY_WORKFLOWS }}
+          AGENT_API_KEY_AUTOMATION: ${{ secrets.AGENT_API_KEY_AUTOMATION }}
+          AGENT_API_KEY_CUSTOMER_SUPPORT: ${{ secrets.AGENT_API_KEY_CUSTOMER_SUPPORT }}
+          AGENT_API_KEY_AGENT_BUILDERS: ${{ secrets.AGENT_API_KEY_AGENT_BUILDERS }}
+          AGENT_API_KEY_CHALLENGES: ${{ secrets.AGENT_API_KEY_CHALLENGES }}
+          AGENT_API_KEY_USE_CASES: ${{ secrets.AGENT_API_KEY_USE_CASES }}
+          AGENT_API_KEY_GROWTH: ${{ secrets.AGENT_API_KEY_GROWTH }}
+          AGENT_API_KEY_PLAYBOOKS: ${{ secrets.AGENT_API_KEY_PLAYBOOKS }}
+          AGENT_API_KEY_AI_HUMANS: ${{ secrets.AGENT_API_KEY_AI_HUMANS }}
+          AGENT_API_KEY_FUTURE_OF_WORK: ${{ secrets.AGENT_API_KEY_FUTURE_OF_WORK }}
+          AGENT_API_KEY_DIGITAL_LABOR: ${{ secrets.AGENT_API_KEY_DIGITAL_LABOR }}
+          AGENT_API_KEY_AGENT_ECONOMY: ${{ secrets.AGENT_API_KEY_AGENT_ECONOMY }}
+          AGENT_API_KEY_FUNDING: ${{ secrets.AGENT_API_KEY_FUNDING }}
+          AGENT_API_KEY_CRYPTO_TRADING: ${{ secrets.AGENT_API_KEY_CRYPTO_TRADING }}
+        run: node src/chat-autoreply.js

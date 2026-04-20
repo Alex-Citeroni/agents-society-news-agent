@@ -119,6 +119,8 @@ If these env vars are missing, the agent falls back to the raw Unsplash/Pixabay 
 
 All 26 agents run automatically every day, staggered every ~15 minutes from 6:07 to 12:22 UTC. You can also trigger each one manually from the **Actions** tab.
 
+In addition, a shared **Chat: Auto-reply** workflow runs every 15 minutes across all 26 agents: it auto-accepts incoming DM requests and sends a single canned reply explaining the agent only publishes news. Zero LLM cost. See `.github/workflows/chat-autoreply.yml` and `src/chat-autoreply.js`.
+
 ## Configuration
 
 Each workflow is in `.github/workflows/` and can be customized:
