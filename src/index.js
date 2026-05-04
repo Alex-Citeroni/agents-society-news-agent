@@ -322,7 +322,7 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
       },
     ],
     temperature: 0.7,
-    max_tokens: 4096,
+    max_tokens: 8192,
     response_format: { type: 'json_object' },
   });
 
@@ -380,7 +380,7 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
       },
     ],
     temperature: 0.3,
-    max_tokens: 4096,
+    max_tokens: 8192,
     response_format: { type: 'json_object' },
   });
 
@@ -696,44 +696,44 @@ function wrapHeadline(text, maxCharsPerLine, maxLines) {
 
 /** Accent colour palettes shared across related categories. */
 const PALETTE_FAMILIES = {
-  tech:     { accent: '#3B82F6' }, // blue
-  money:    { accent: '#FBBF24' }, // gold
-  growth:   { accent: '#10B981' }, // emerald
+  tech: { accent: '#3B82F6' }, // blue
+  money: { accent: '#FBBF24' }, // gold
+  growth: { accent: '#10B981' }, // emerald
   creative: { accent: '#EC4899' }, // pink
-  human:    { accent: '#FB923C' }, // peach
+  human: { accent: '#FB923C' }, // peach
   security: { accent: '#DC2626' }, // red
-  ai:       { accent: '#A855F7' }, // purple
+  ai: { accent: '#A855F7' }, // purple
   strategy: { accent: '#F59E0B' }, // amber
 };
 
 /** Map each agent category to a palette family. */
 const CATEGORY_TO_PALETTE = {
-  tech_trends:      'tech',
-  new_tools:        'tech',
-  workflows:        'tech',
-  automation:       'tech',
-  use_cases:        'tech',
-  playbooks:        'tech',
-  agent_builders:   'tech',
-  finance:          'money',
-  funding:          'money',
-  revops:           'money',
-  sales:            'money',
-  growth:           'growth',
-  digital_labor:    'growth',
-  marketing:        'creative',
-  lead_generation:  'creative',
-  hr_recruiting:    'human',
-  ai_humans:        'human',
-  future_of_work:   'human',
+  tech_trends: 'tech',
+  new_tools: 'tech',
+  workflows: 'tech',
+  automation: 'tech',
+  use_cases: 'tech',
+  playbooks: 'tech',
+  agent_builders: 'tech',
+  finance: 'money',
+  funding: 'money',
+  revops: 'money',
+  sales: 'money',
+  growth: 'growth',
+  digital_labor: 'growth',
+  marketing: 'creative',
+  lead_generation: 'creative',
+  hr_recruiting: 'human',
+  ai_humans: 'human',
+  future_of_work: 'human',
   customer_support: 'human',
-  it_security:      'security',
-  challenges:       'security',
-  ai_agents:        'ai',
-  agent_economy:    'ai',
-  crypto_trading:   'ai',
-  strategy:         'strategy',
-  operations:       'strategy',
+  it_security: 'security',
+  challenges: 'security',
+  ai_agents: 'ai',
+  agent_economy: 'ai',
+  crypto_trading: 'ai',
+  strategy: 'strategy',
+  operations: 'strategy',
 };
 
 function getPaletteForCategory(category) {
@@ -756,9 +756,9 @@ function deriveEyebrow(tags) {
 
 /** Wrap config per layout family — cards are narrower than edge-gradient layouts. */
 const LAYOUT_WRAP = {
-  bottom:       { maxChars: 26, maxLines: 3 },
-  top:          { maxChars: 26, maxLines: 3 },
-  'left-card':  { maxChars: 16, maxLines: 4 },
+  bottom: { maxChars: 26, maxLines: 3 },
+  top: { maxChars: 26, maxLines: 3 },
+  'left-card': { maxChars: 16, maxLines: 4 },
   'right-card': { maxChars: 16, maxLines: 4 },
 };
 
