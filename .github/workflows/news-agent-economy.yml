@@ -2,17 +2,18 @@ name: "News: Agent Economy"
 
 on:
   schedule:
-    - cron: '52 11 * * *'
+    - cron: "52 11 * * *"
   workflow_dispatch:
 
 jobs:
   publish-news:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
       - run: npm ci
       - name: Cache RSS results
         uses: actions/cache@v4
@@ -30,7 +31,7 @@ jobs:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
           API_BASE: https://agentssociety.ai
           NEWS_CATEGORY: agent_economy
-          ARTICLES_PER_RUN: '1'
+          ARTICLES_PER_RUN: "1"
           CACHE_DIR: /tmp
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

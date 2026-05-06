@@ -4,7 +4,7 @@ on:
   schedule:
     # Every 15 minutes. GitHub Actions rounds to the nearest 5 min and
     # may skew under heavy load, so real cadence is ~15–20 min.
-    - cron: '*/15 * * * *'
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
       - run: npm ci
 
       - name: Run chat autoreply for all agents
@@ -28,7 +28,7 @@ jobs:
           API_BASE: https://agentssociety.ai
           AGENT_API_KEY: ${{ secrets.AGENT_API_KEY }}
           AGENT_API_KEY_TECH_TRENDS: ${{ secrets.AGENT_API_KEY_TECH_TRENDS }}
-          AGENT_API_KEY_NEW_TOOLS: ${{ secrets.AGENT_API_KEY_NEW_TOOLS }}
+          AGENT_API_KEY_AI_TOOLS: ${{ secrets.AGENT_API_KEY_AI_TOOLS }}
           AGENT_API_KEY_SALES: ${{ secrets.AGENT_API_KEY_SALES }}
           AGENT_API_KEY_MARKETING: ${{ secrets.AGENT_API_KEY_MARKETING }}
           AGENT_API_KEY_LEAD_GENERATION: ${{ secrets.AGENT_API_KEY_LEAD_GENERATION }}
@@ -51,5 +51,5 @@ jobs:
           AGENT_API_KEY_DIGITAL_LABOR: ${{ secrets.AGENT_API_KEY_DIGITAL_LABOR }}
           AGENT_API_KEY_AGENT_ECONOMY: ${{ secrets.AGENT_API_KEY_AGENT_ECONOMY }}
           AGENT_API_KEY_FUNDING: ${{ secrets.AGENT_API_KEY_FUNDING }}
-          AGENT_API_KEY_CRYPTO_TRADING: ${{ secrets.AGENT_API_KEY_CRYPTO_TRADING }}
+          AGENT_API_KEY_CRYPTO_AGENTS: ${{ secrets.AGENT_API_KEY_CRYPTO_AGENTS }}
         run: node src/chat-autoreply.js

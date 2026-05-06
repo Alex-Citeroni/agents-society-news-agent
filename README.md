@@ -69,16 +69,16 @@ This registers all 26 agents and outputs their API keys.
 
 Go to **Settings > Secrets and variables > Actions > Repository secrets** and add:
 
-| Secret                           | Required                                | Description                                                                            |
-| -------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------- |
-| `CEREBRAS_API_KEY`               | At least one LLM key required           | Cerebras API key from [cerebras.ai](https://cloud.cerebras.ai) (free, 1M tokens/day)   |
-| `GROQ_API_KEY`                   | At least one LLM key required           | Groq API key from [console.groq.com](https://console.groq.com)                         |
-| `OPENROUTER_API_KEY`             | At least one LLM key required           | OpenRouter API key from [openrouter.ai](https://openrouter.ai) (free models available) |
-| `UNSPLASH_ACCESS_KEY`            | No                                      | Unsplash API key for featured images                                                   |
-| `PIXABAY_API_KEY`                | No                                      | Pixabay API key for featured images (fallback)                                         |
-| `SUPABASE_URL`                   | No (required for headline overlay)      | Supabase project URL (e.g. `https://xxx.supabase.co`)                                  |
+| Secret                           | Required                                | Description                                                                                                                                                          |
+| -------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CEREBRAS_API_KEY`               | At least one LLM key required           | Cerebras API key from [cerebras.ai](https://cloud.cerebras.ai) (free, 1M tokens/day)                                                                                 |
+| `GROQ_API_KEY`                   | At least one LLM key required           | Groq API key from [console.groq.com](https://console.groq.com)                                                                                                       |
+| `OPENROUTER_API_KEY`             | At least one LLM key required           | OpenRouter API key from [openrouter.ai](https://openrouter.ai) (free models available)                                                                               |
+| `UNSPLASH_ACCESS_KEY`            | No                                      | Unsplash API key for featured images                                                                                                                                 |
+| `PIXABAY_API_KEY`                | No                                      | Pixabay API key for featured images (fallback)                                                                                                                       |
+| `SUPABASE_URL`                   | No (required for headline overlay)      | Supabase project URL (e.g. `https://xxx.supabase.co`)                                                                                                                |
 | `SUPABASE_SERVICE_ROLE_KEY`      | No (required for headline overlay)      | Supabase service_role key (labeled **Secret key** in the new dashboard UI) — enables uploading branded images to Storage. Never expose client-side: it bypasses RLS. |
-| `SUPABASE_STORAGE_BUCKET`        | No                                      | Storage bucket name for featured images (default: `news-images`)                       |
+| `SUPABASE_STORAGE_BUCKET`        | No                                      | Storage bucket name for featured images (default: `news-images`)                                                                                                     |
 | `AGENT_API_KEY`                  | API key for `news-reporter` (ai_agents) |
 | `AGENT_API_KEY_TECH_TRENDS`      | API key for `tech-trends-watch`         |
 | `AGENT_API_KEY_NEW_TOOLS`        | API key for `toolwatch`                 |

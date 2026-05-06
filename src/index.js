@@ -25,8 +25,10 @@ const CATEGORY = process.env.NEWS_CATEGORY || 'ai_agents';
 const ARTICLES_PER_RUN = parseInt(process.env.ARTICLES_PER_RUN || '1', 10);
 const FETCH_TIMEOUT_MS = 15000;
 const PUBLISH_TIMEOUT_MS = 60_000;
-const MAX_LLM_RETRIES = 5;
-const MAX_RETRY_WAIT_MS = 120_000; // max 2 minutes wait per retry
+const LLM_REQUEST_TIMEOUT_MS = 90_000; // hard cap per single LLM HTTP call
+const LLM_CALL_BUDGET_MS = 240_000;   // total budget per logical LLM call across all providers/retries
+const MAX_LLM_RETRIES = 2;
+const MAX_RETRY_WAIT_MS = 30_000;     // cap backoff/retry-after wait — switching provider is faster
 
 if (!AGENT_API_KEY) {
   console.error('Missing required env var: AGENT_API_KEY');
@@ -51,7 +53,7 @@ function buildProviders() {
   if (CEREBRAS_API_KEY) {
     providers.push({
       name: 'cerebras',
-      client: new OpenAI({ apiKey: CEREBRAS_API_KEY, baseURL: 'https://api.cerebras.ai/v1' }),
+      client: new OpenAI({ apiKey: CEREBRAS_API_KEY, baseURL: 'https://api.cerebras.ai/v1', timeout: LLM_REQUEST_TIMEOUT_MS, maxRetries: 0 }),
       model: 'qwen-3-235b-a22b-instruct-2507',
     });
   }
@@ -60,14 +62,14 @@ function buildProviders() {
   if (GROQ_API_KEY) {
     providers.push({
       name: 'groq',
-      client: new Groq({ apiKey: GROQ_API_KEY }),
+      client: new Groq({ apiKey: GROQ_API_KEY, timeout: LLM_REQUEST_TIMEOUT_MS, maxRetries: 0 }),
       model: 'llama-3.3-70b-versatile',
     });
   }
 
   // Fallback 2: OpenRouter free auto-router (distributes across all free models)
   if (OPENROUTER_API_KEY) {
-    const orClient = new OpenAI({ apiKey: OPENROUTER_API_KEY, baseURL: 'https://openrouter.ai/api/v1' });
+    const orClient = new OpenAI({ apiKey: OPENROUTER_API_KEY, baseURL: 'https://openrouter.ai/api/v1', timeout: LLM_REQUEST_TIMEOUT_MS, maxRetries: 0 });
     providers.push({
       name: 'openrouter',
       client: orClient,
@@ -84,7 +86,7 @@ function buildProviders() {
   if (CEREBRAS_API_KEY) {
     providers.push({
       name: 'cerebras-llama',
-      client: new OpenAI({ apiKey: CEREBRAS_API_KEY, baseURL: 'https://api.cerebras.ai/v1' }),
+      client: new OpenAI({ apiKey: CEREBRAS_API_KEY, baseURL: 'https://api.cerebras.ai/v1', timeout: LLM_REQUEST_TIMEOUT_MS, maxRetries: 0 }),
       model: 'llama3.1-8b',
     });
   }
@@ -171,8 +173,13 @@ const JSON_MODE_PROVIDERS = new Set(['cerebras', 'cerebras-llama', 'groq']);
  */
 async function callLLMWithRetry(params) {
   let lastError = null;
+  const deadline = Date.now() + LLM_CALL_BUDGET_MS;
 
   for (let pi = 0; pi < LLM_PROVIDERS.length; pi++) {
+    if (Date.now() >= deadline) {
+      console.warn(`  LLM call budget exhausted (${LLM_CALL_BUDGET_MS}ms), aborting`);
+      break;
+    }
     const provider = LLM_PROVIDERS[pi];
 
     for (let attempt = 1; attempt <= MAX_LLM_RETRIES; attempt++) {
@@ -205,10 +212,15 @@ async function callLLMWithRetry(params) {
           break;
         }
 
-        // Exponential backoff with retry-after support
+        // Exponential backoff with retry-after support, clamped to remaining budget
         const retryAfterSec = parseInt(err.headers?.['retry-after'], 10) || 0;
         const backoff = 1000 * Math.pow(2, attempt - 1);
-        const delay = Math.min(retryAfterSec > 0 ? retryAfterSec * 1000 : backoff, MAX_RETRY_WAIT_MS);
+        const remaining = deadline - Date.now();
+        const delay = Math.max(0, Math.min(retryAfterSec > 0 ? retryAfterSec * 1000 : backoff, MAX_RETRY_WAIT_MS, remaining));
+        if (remaining <= 0) {
+          console.warn(`  ${provider.name}: budget exhausted mid-retry, moving on`);
+          break;
+        }
         console.warn(`  ${provider.name}: attempt ${attempt} failed (${err.status || err.code}), retrying in ${Math.round(delay / 1000)}s...`);
         await new Promise((r) => setTimeout(r, delay));
       }
