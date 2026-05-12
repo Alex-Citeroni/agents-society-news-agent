@@ -13,6 +13,8 @@ const AGENT_API_KEY = process.env.AGENT_API_KEY;
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const CEREBRAS_API_KEY = process.env.CEREBRAS_API_KEY || '';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY || '';
 const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -26,16 +28,17 @@ const ARTICLES_PER_RUN = parseInt(process.env.ARTICLES_PER_RUN || '1', 10);
 const FETCH_TIMEOUT_MS = 15000;
 const PUBLISH_TIMEOUT_MS = 60_000;
 const LLM_REQUEST_TIMEOUT_MS = 90_000; // hard cap per single LLM HTTP call
-const LLM_CALL_BUDGET_MS = 240_000;   // total budget per logical LLM call across all providers/retries
-const MAX_LLM_RETRIES = 2;
+const LLM_CALL_BUDGET_MS = 300_000;   // total budget per logical LLM call across all providers/retries
+const MAX_LLM_RETRIES = 3;
 const MAX_RETRY_WAIT_MS = 30_000;     // cap backoff/retry-after wait — switching provider is faster
+const LLM_INITIAL_BACKOFF_MS = 3000;  // base for exponential backoff on retryable errors
 
 if (!AGENT_API_KEY) {
   console.error('Missing required env var: AGENT_API_KEY');
   process.exit(1);
 }
-if (!CEREBRAS_API_KEY && !GROQ_API_KEY && !OPENROUTER_API_KEY) {
-  console.error('No LLM provider configured. Set at least one of: CEREBRAS_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY');
+if (!CEREBRAS_API_KEY && !GROQ_API_KEY && !OPENROUTER_API_KEY && !GEMINI_API_KEY && !MISTRAL_API_KEY) {
+  console.error('No LLM provider configured. Set at least one of: CEREBRAS_API_KEY, GROQ_API_KEY, GEMINI_API_KEY, MISTRAL_API_KEY, OPENROUTER_API_KEY');
   process.exit(1);
 }
 
@@ -67,27 +70,76 @@ function buildProviders() {
     });
   }
 
-  // Fallback 2: OpenRouter free auto-router (distributes across all free models)
-  if (OPENROUTER_API_KEY) {
-    const orClient = new OpenAI({ apiKey: OPENROUTER_API_KEY, baseURL: 'https://openrouter.ai/api/v1', timeout: LLM_REQUEST_TIMEOUT_MS, maxRetries: 0 });
+  // Fallback 2: Google Gemini 2.0 Flash (1500 RPD free, very reliable, native JSON mode)
+  // Uses Google's OpenAI-compatible endpoint.
+  if (GEMINI_API_KEY) {
     providers.push({
-      name: 'openrouter',
-      client: orClient,
-      model: 'openrouter/free',
+      name: 'gemini',
+      client: new OpenAI({
+        apiKey: GEMINI_API_KEY,
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+        timeout: LLM_REQUEST_TIMEOUT_MS,
+        maxRetries: 0,
+      }),
+      model: 'gemini-2.0-flash',
     });
+    // Lower-tier Gemini fallback within the same provider (different quota bucket)
     providers.push({
-      name: 'openrouter-gemma',
-      client: orClient,
-      model: 'google/gemma-3-27b-it:free',
+      name: 'gemini-flash-lite',
+      client: new OpenAI({
+        apiKey: GEMINI_API_KEY,
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+        timeout: LLM_REQUEST_TIMEOUT_MS,
+        maxRetries: 0,
+      }),
+      model: 'gemini-2.0-flash-lite',
     });
   }
 
-  // Last resort: Cerebras Llama 8B (fast but lower quality, better than nothing)
+  // Fallback 3: Mistral free tier (small/medium quality, separate quota)
+  if (MISTRAL_API_KEY) {
+    providers.push({
+      name: 'mistral',
+      client: new OpenAI({
+        apiKey: MISTRAL_API_KEY,
+        baseURL: 'https://api.mistral.ai/v1',
+        timeout: LLM_REQUEST_TIMEOUT_MS,
+        maxRetries: 0,
+      }),
+      model: 'mistral-small-latest',
+    });
+  }
+
+  // Fallback 4: Cerebras Llama 8B (fast but lower quality, separate quota from Qwen)
   if (CEREBRAS_API_KEY) {
     providers.push({
       name: 'cerebras-llama',
       client: new OpenAI({ apiKey: CEREBRAS_API_KEY, baseURL: 'https://api.cerebras.ai/v1', timeout: LLM_REQUEST_TIMEOUT_MS, maxRetries: 0 }),
       model: 'llama3.1-8b',
+    });
+  }
+
+  // Last resort: OpenRouter free models (notoriously unstable: empty/truncated responses).
+  // Placed last because they often return non-JSON or empty content.
+  // Every model below uses the `:free` suffix — guaranteed zero cost per token.
+  // OpenRouter free-tier shared limits: ~20 req/min and ~50 req/day with no
+  // credits ever added (~1000/day if you've added at least $10 once).
+  if (OPENROUTER_API_KEY) {
+    const orClient = new OpenAI({ apiKey: OPENROUTER_API_KEY, baseURL: 'https://openrouter.ai/api/v1', timeout: LLM_REQUEST_TIMEOUT_MS, maxRetries: 0 });
+    providers.push({
+      name: 'openrouter-deepseek',
+      client: orClient,
+      model: 'deepseek/deepseek-chat-v3-0324:free',
+    });
+    providers.push({
+      name: 'openrouter-llama',
+      client: orClient,
+      model: 'meta-llama/llama-3.3-70b-instruct:free',
+    });
+    providers.push({
+      name: 'openrouter-gemma',
+      client: orClient,
+      model: 'google/gemma-3-27b-it:free',
     });
   }
 
@@ -164,14 +216,25 @@ function extractJSON(text) {
 }
 
 /** Providers that support response_format: json_object */
-const JSON_MODE_PROVIDERS = new Set(['cerebras', 'cerebras-llama', 'groq']);
+const JSON_MODE_PROVIDERS = new Set([
+  'cerebras',
+  'cerebras-llama',
+  'groq',
+  'gemini',
+  'gemini-flash-lite',
+  'mistral',
+]);
 
 /**
  * Call LLM with retry, exponential backoff, and multi-provider fallback.
  * Tries each provider in order. On rate limit, moves to next provider.
  * Within each provider, retries with exponential backoff.
+ *
+ * Optional `validate(response)` callback runs after a successful HTTP call.
+ * If it throws, the response is rejected and the next provider is tried —
+ * this catches empty/truncated/malformed content that the SDK didn't reject.
  */
-async function callLLMWithRetry(params) {
+async function callLLMWithRetry(params, validate) {
   let lastError = null;
   const deadline = Date.now() + LLM_CALL_BUDGET_MS;
 
@@ -191,10 +254,25 @@ async function callLLMWithRetry(params) {
           createParams.response_format = response_format;
         }
         const result = await provider.client.chat.completions.create(createParams);
+
+        // Validate the response shape (e.g. non-empty content, valid JSON).
+        // A validation failure is treated as a soft error — we skip to the
+        // next provider rather than retrying the same one, because empty/
+        // malformed responses tend to repeat from the same model.
+        if (validate) {
+          try {
+            validate(result);
+          } catch (validationErr) {
+            lastError = validationErr;
+            console.warn(`  ${provider.name}: invalid response (${validationErr.message}), trying next provider...`);
+            break;
+          }
+        }
+
         return result;
       } catch (err) {
         lastError = err;
-        const isRetryable = err.status === 429 || err.status === 503 || err.code === 'ECONNRESET' || err.message?.includes('timeout');
+        const isRetryable = err.status === 429 || err.status === 503 || err.status === 502 || err.status === 504 || err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.message?.includes('timeout');
 
         // Non-retryable error (404, 400, auth, etc.) — skip to next provider
         if (!isRetryable) {
@@ -214,7 +292,7 @@ async function callLLMWithRetry(params) {
 
         // Exponential backoff with retry-after support, clamped to remaining budget
         const retryAfterSec = parseInt(err.headers?.['retry-after'], 10) || 0;
-        const backoff = 1000 * Math.pow(2, attempt - 1);
+        const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
         const remaining = deadline - Date.now();
         const delay = Math.max(0, Math.min(retryAfterSec > 0 ? retryAfterSec * 1000 : backoff, MAX_RETRY_WAIT_MS, remaining));
         if (remaining <= 0) {
@@ -228,6 +306,36 @@ async function callLLMWithRetry(params) {
   }
 
   throw lastError || new Error('All LLM providers failed');
+}
+
+/**
+ * Build a validator that ensures the LLM returned a parsable JSON object
+ * with all the required string fields. Used to skip empty/truncated/malformed
+ * responses and move on to the next provider in the fallback chain.
+ */
+function makeJsonContentValidator(requiredFields = []) {
+  return (response) => {
+    const content = response?.choices?.[0]?.message?.content;
+    if (!content || typeof content !== 'string' || content.trim().length === 0) {
+      throw new Error('empty response content');
+    }
+    const finishReason = response.choices[0]?.finish_reason;
+    if (finishReason === 'length') {
+      throw new Error('response truncated (max_tokens reached)');
+    }
+    if (requiredFields.length === 0) return;
+    let parsed;
+    try {
+      parsed = extractJSON(content);
+    } catch (err) {
+      throw new Error(`unparsable JSON: ${err.message}`);
+    }
+    for (const field of requiredFields) {
+      if (parsed[field] === undefined || parsed[field] === null || parsed[field] === '') {
+        throw new Error(`missing required field "${field}"`);
+      }
+    }
+  };
 }
 
 /**
@@ -336,21 +444,10 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
     temperature: 0.7,
     max_tokens: 8192,
     response_format: { type: 'json_object' },
-  });
+  }, makeJsonContentValidator(['title', 'body']));
 
-  const content = response.choices[0]?.message?.content;
-  if (!content) throw new Error('Empty response from LLM');
-
-  // Detect truncated response (model hit token limit mid-JSON)
-  const finishReason = response.choices[0]?.finish_reason;
-  if (finishReason === 'length') {
-    throw new Error('Response truncated (max_tokens reached) — article too long for token limit');
-  }
-
+  const content = response.choices[0].message.content;
   const parsed = extractJSON(content);
-  if (!parsed.title || !parsed.body) {
-    throw new Error('Missing title or body in response');
-  }
 
   return {
     title: parsed.title,
@@ -394,20 +491,10 @@ CRITICAL: The "body" field must be a single JSON string. Use \\n\\n for paragrap
     temperature: 0.3,
     max_tokens: 8192,
     response_format: { type: 'json_object' },
-  });
+  }, makeJsonContentValidator(['title', 'body']));
 
-  const content = response.choices[0]?.message?.content;
-  if (!content) throw new Error(`Empty translation response (${langName})`);
-
-  const finishReason = response.choices[0]?.finish_reason;
-  if (finishReason === 'length') {
-    throw new Error(`Translation truncated (${langName}) — max_tokens reached`);
-  }
-
+  const content = response.choices[0].message.content;
   const parsed = extractJSON(content);
-  if (!parsed.title || !parsed.body) {
-    throw new Error(`Missing title or body in translation (${langName})`);
-  }
 
   return {
     title: parsed.title,
@@ -559,9 +646,9 @@ Headline rules:
         },
       ],
       temperature: 0.5,
-      max_tokens: 250,
+      max_tokens: 400,
       response_format: { type: 'json_object' },
-    });
+    }, makeJsonContentValidator(['queries']));
 
     const content = response.choices[0]?.message?.content;
     if (content) {
